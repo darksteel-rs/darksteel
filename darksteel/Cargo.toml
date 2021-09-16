@@ -1,0 +1,42 @@
+[package]
+name = "darksteel"
+version = "0.1.0"
+authors = ["Reese van Dijk <exadyne@protonmail.com>"]
+license = "Apache-2.0"
+description = "A high level task runtime that allows for increased observability and reliability through supervision."
+readme = "../README.md"
+repository = "https://github.com/darksteel-rs/darksteel"
+homepage = "https://github.com/darksteel-rs/darksteel"
+keywords = ["darksteel", "raft", "distributed", "supervised", "rust"]
+categories = ["network-programming"]
+edition = "2018"
+
+[dependencies]
+darksteel-codegen = { version = "0.1.0", path = "../darksteel-codegen", package = "darksteel-codegen" }
+thiserror = "1.0"
+tokio = { version = "1.6.1", features = ["full"] }
+tokio-stream = "0.1"
+tonic = "0.5"
+prost = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+async-trait = "0.1.50"
+async-raft = "0.6"
+anyhow = "1.0"
+dyn-clone = "1.0"
+futures = "0.3"
+tracing = "0.1"
+bincode = "1.3"
+typetag = "0.1"
+rand = "0.8"
+dns-lookup = "1.0"
+http = "0.2"
+sorted-insert = "0.2"
+unchecked_unwrap = "3.0"
+dashmap = "4"
+downcast-rs = "1.2"
+
+[dev-dependencies]
+tracing-subscriber = "0.2"
+
+[build-dependencies]
+tonic-build = "0.5"
