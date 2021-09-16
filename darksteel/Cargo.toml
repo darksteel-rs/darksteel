@@ -2,7 +2,7 @@
 name = "darksteel"
 version = "0.1.0"
 authors = ["Reese van Dijk <exadyne@protonmail.com>"]
-license = "Apache-2.0"
+license = "Apache-2.0/MIT"
 description = "A high level task runtime that allows for increased observability and reliability through supervision."
 readme = "../README.md"
 repository = "https://github.com/darksteel-rs/darksteel"
