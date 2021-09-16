@@ -32,7 +32,6 @@ dns-lookup = "1.0"
 http = "0.2"
 sorted-insert = "0.2"
 unchecked_unwrap = "3.0"
-dashmap = "4"
 downcast-rs = "1.2"
 
 [dev-dependencies]

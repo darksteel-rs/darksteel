@@ -6,7 +6,6 @@ use super::{
 };
 use crate::prelude::TaskError;
 use crate::process::{send, task::*};
-use dashmap::DashMap;
 use dyn_clone::DynClone;
 use error::*;
 use futures::future::BoxFuture;
@@ -15,7 +14,7 @@ use state::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 pub mod error;
 mod state;
@@ -177,7 +176,7 @@ where
     signal_handler: Option<Box<dyn SignalHandler<E>>>,
     child_specs: Vec<Arc<dyn Process<E> + 'static>>,
     child_order: Mutex<ChildOrder>,
-    child_refs: DashMap<ProcessId, ProcessRef<E>>,
+    child_refs: RwLock<HashMap<ProcessId, ProcessRef<E>>>,
     process_config: ProcessConfig,
     supervisor_config: SupervisorConfig,
 }
@@ -241,7 +240,7 @@ where
         for spec in &self.child_specs {
             let child = runtime.spawn_with_parent(spec.clone(), pid).await;
             self.child_order.lock().await.insert(child.pid());
-            self.child_refs.insert(child.pid(), child);
+            self.child_refs.write().await.insert(child.pid(), child);
         }
     }
     async fn handle_signals(&self, mut context: ProcessContext<E>) {
@@ -255,13 +254,10 @@ where
         while let Some(signal) = context.recv().await {
             let child_policies = self
                 .child_refs
+                .read()
+                .await
                 .iter()
-                .map(|data| {
-                    (
-                        *data.key(),
-                        data.value().process().config().restart_policy(),
-                    )
-                })
+                .map(|(pid, reference)| (*pid, reference.process().config().restart_policy()))
                 .collect::<HashMap<ProcessId, ChildRestartPolicy>>();
 
             if let Some(signal_handler) = &self.signal_handler {
@@ -271,7 +267,7 @@ where
             match manager.next_action(&child_policies, &signal) {
                 StateAction::None => (),
                 StateAction::Start(pid, finalise) => {
-                    if let Some(child) = self.child_refs.get(&pid) {
+                    if let Some(child) = self.child_refs.read().await.get(&pid) {
                         send(&child.sender(), ProcessSignal::Start);
                     } else {
                         tracing::error!("Could not find Child({pid})", pid = pid);
@@ -289,7 +285,7 @@ where
                     }
                 }
                 StateAction::Terminate(pid) => {
-                    if let Some(child) = self.child_refs.get(&pid) {
+                    if let Some(child) = self.child_refs.read().await.get(&pid) {
                         send(&child.sender(), ProcessSignal::Terminate);
                     } else {
                         tracing::error!("Could not find Child({pid})", pid = pid);
@@ -297,7 +293,7 @@ where
                 }
                 StateAction::Shutdown { pids_required } => {
                     for pid in pids_required {
-                        if let Some(child) = self.child_refs.get(&pid) {
+                        if let Some(child) = self.child_refs.read().await.get(&pid) {
                             send(&child.sender(), ProcessSignal::Shutdown);
                         }
                     }
