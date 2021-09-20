@@ -74,7 +74,7 @@ where
         } else {
             self.tx_signal_root.clone()
         };
-        let mut container = ProcessContainer::new(
+        let container = ProcessContainer::new(
             process.clone(),
             self.modules.clone(),
             parent,
@@ -87,9 +87,13 @@ where
             self.name(pid, name).await;
         }
 
-        container.handle_signals().await;
         self.processes.write().await.insert(pid, container);
+
         process.handle_spawn(pid, self).await;
+
+        if let Some(process) = self.processes.write().await.get_mut(&pid) {
+            process.handle_signals().await;
+        }
 
         reference
     }

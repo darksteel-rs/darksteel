@@ -154,7 +154,6 @@ impl StateManager {
             }
         }
 
-        // If there are no children to start, terminate.
         if let Some(next_pid) = pids_active.pop_front() {
             self.state = StateTransition::Start {
                 pids_active,

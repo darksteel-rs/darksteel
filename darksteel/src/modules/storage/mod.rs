@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, RwLockMappedWriteGuard, RwLockReadGuard, RwLockWriteGuard};
 use unchecked_unwrap::UncheckedUnwrap;
 
+use super::IntoModule;
+
 pub mod error;
 
 pub trait ResourceTrait: Any + Send + Sync + Sized + Default {}
@@ -97,5 +99,12 @@ impl Storage {
             *data.write().await = T::default();
         }
         Ok(())
+    }
+}
+
+#[crate::async_trait]
+impl IntoModule for Storage {
+    async fn module(_: &super::Modules) -> Self {
+        Self::new()
     }
 }
