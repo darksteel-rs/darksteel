@@ -1,7 +1,6 @@
 use self::{runtime::Runtime, task::ProcessId};
 use super::*;
 use crate::prelude::{Modules, TaskError};
-use futures::Future;
 use std::sync::{Arc, Weak};
 use tokio::{
     runtime::Handle,
@@ -21,7 +20,7 @@ where
     tx_parent: UnboundedSender<ProcessSignal<E>>,
     rx: OwnedMutexGuard<UnboundedReceiver<ProcessSignal<E>>>,
     modules: Modules,
-    map: Weak<Runtime<E>>,
+    runtime: Weak<Runtime<E>>,
 }
 
 impl<E> ProcessContext<E>
@@ -48,19 +47,8 @@ where
         self.modules.clone()
     }
 
-    pub async fn runtime<I, F>(&self, function: I)
-    where
-        I: Fn(&Runtime<E>) -> F + Send + 'static,
-        F: Future<Output = ()> + Send + 'static,
-    {
-        if let Some(runtime) = self.map.upgrade() {
-            function(&*runtime).await;
-        } else {
-            tracing::error!(
-                "Could not access process map from `{pid}` - Does not exist",
-                pid = self.pid
-            );
-        }
+    pub fn runtime(&self) -> Option<Arc<Runtime<E>>> {
+        self.runtime.upgrade()
     }
 }
 
@@ -150,7 +138,7 @@ where
             tx_parent: self.tx_parent.clone(),
             rx: self.rx.clone().lock_owned().await,
             modules: self.modules.clone(),
-            map: self.runtime.clone(),
+            runtime: self.runtime.clone(),
         }
     }
 

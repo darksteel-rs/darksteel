@@ -29,9 +29,15 @@ where
         self.modules.clone()
     }
 
-    pub async fn start(&self, root_process: Arc<impl Process<E> + 'static>) {
-        let reference = self.runtime.spawn(root_process).await;
-        send(&reference.sender(), ProcessSignal::Start);
+    pub async fn start(&self, process: Arc<dyn Process<E> + 'static>) {
+        self.start_multiple(&[process]).await;
+    }
+
+    pub async fn start_multiple(&self, processes: &[Arc<dyn Process<E>>]) {
+        for process in processes {
+            let reference = self.runtime.spawn(process.clone()).await;
+            send(&reference.sender(), ProcessSignal::Start);
+        }
         self.runtime.block_on_all().await;
     }
 }

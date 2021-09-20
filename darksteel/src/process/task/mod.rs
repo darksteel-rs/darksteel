@@ -24,13 +24,13 @@ pub type ProcessId = u64;
 pub type TaskResult<E> = Result<(), E>;
 
 pub trait TaskTrait<E: TaskError>:
-    Fn(Modules) -> BoxFuture<'static, TaskResult<E>> + DynClone + Send + Sync + 'static
+    Sync + Fn(Modules) -> BoxFuture<'static, TaskResult<E>> + DynClone + Send + 'static
 {
 }
 
 impl<F, E> TaskTrait<E> for F
 where
-    F: Fn(Modules) -> BoxFuture<'static, TaskResult<E>> + DynClone + Send + Sync + 'static,
+    F: Sync + Fn(Modules) -> BoxFuture<'static, TaskResult<E>> + DynClone + Send + 'static,
     E: TaskError,
 {
 }
@@ -54,14 +54,14 @@ where
 {
     pub fn new<F>(task: fn(Modules) -> F) -> Arc<Task<E>>
     where
-        F: Future<Output = TaskResult<E>> + Send + Sync + 'static,
+        F: Future<Output = TaskResult<E>> + Send + 'static,
     {
         Self::new_with_config(Default::default(), task)
     }
 
     pub fn new_with_config<F>(config: ProcessConfig, task: fn(Modules) -> F) -> Arc<Task<E>>
     where
-        F: Future<Output = TaskResult<E>> + Send + Sync + 'static,
+        F: Future<Output = TaskResult<E>> + Send + 'static,
     {
         Arc::new(Task {
             id: global_id(),
@@ -90,12 +90,15 @@ where
     fn id(&self) -> ProcessId {
         self.id
     }
+
     fn config(&self) -> ProcessConfig {
         self.config.clone()
     }
+
     async fn handle_spawn(&self, _: ProcessId, _: &Arc<Runtime<E>>) {
         // Do nothing
     }
+
     async fn handle_signals(&self, mut context: ProcessContext<E>) {
         let pid = context.pid();
         let runtime = Handle::current();

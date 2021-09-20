@@ -9,6 +9,7 @@ use std::{
 use tokio::sync::mpsc::UnboundedSender;
 
 pub mod container;
+pub mod handler;
 pub mod runtime;
 pub mod supervisor;
 pub mod task;
@@ -82,28 +83,22 @@ where
 
 #[derive(Clone)]
 pub struct ProcessConfig {
-    termination_policy: ChildTerminationPolicy,
-    restart_policy: ChildRestartPolicy,
-    significant: bool,
+    pub name: Option<String>,
+    pub termination_policy: ChildTerminationPolicy,
+    pub restart_policy: ChildRestartPolicy,
+    pub significant: bool,
 }
 
 impl ProcessConfig {
-    pub fn new(
-        termination_policy: ChildTerminationPolicy,
-        restart_policy: ChildRestartPolicy,
-        significant: bool,
-    ) -> Self {
-        Self {
-            termination_policy,
-            restart_policy,
-            significant,
-        }
+    pub fn name<S: Into<String>>(&mut self, name: S) {
+        self.name = Some(name.into());
     }
 }
 
 impl Default for ProcessConfig {
     fn default() -> Self {
         Self {
+            name: None,
             termination_policy: ChildTerminationPolicy::Brutal,
             restart_policy: ChildRestartPolicy::Permanent,
             significant: false,
@@ -111,20 +106,9 @@ impl Default for ProcessConfig {
     }
 }
 
-impl ProcessConfig {
-    pub fn termination_policy(&self) -> ChildTerminationPolicy {
-        self.termination_policy
-    }
-    pub fn restart_policy(&self) -> ChildRestartPolicy {
-        self.restart_policy
-    }
-    pub fn significant(&self) -> bool {
-        self.significant
-    }
-}
-
 mod private {
     use super::{
+        handler::Handler,
         supervisor::Supervisor,
         task::{Task, TaskError},
     };
@@ -133,6 +117,7 @@ mod private {
 
     impl<E> Sealed for Task<E> where E: TaskError {}
     impl<E> Sealed for Supervisor<E> where E: TaskError {}
+    impl<E> Sealed for Handler<E> where E: TaskError {}
 }
 
 #[crate::async_trait]
@@ -148,11 +133,11 @@ where
 
 impl_downcast!(Process<E> where E: TaskError);
 
-pub fn global_id() -> ProcessId {
+pub(crate) fn global_id() -> ProcessId {
     GLOBAL_ID_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
-pub fn global_pid() -> ProcessId {
+pub(crate) fn global_pid() -> ProcessId {
     GLOBAL_PID_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 

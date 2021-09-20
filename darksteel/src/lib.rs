@@ -6,11 +6,12 @@ pub mod process;
 
 pub mod prelude {
     pub use crate::environment::Environment;
+    pub use crate::error::UniversalError;
     pub use crate::identity::IdentityTrait;
     pub use crate::modules::{IntoModule, Modules};
     pub use crate::process::{
-        supervisor::Supervisor,
-        task::{TaskError, TaskResult},
+        supervisor::{AutomaticTerminationPolicy, RestartPolicy, Supervisor, SupervisorConfig},
+        task::{Task, TaskError, TaskResult},
         *,
     };
 }

@@ -6,4 +6,6 @@ pub enum SupervisorBuilderError {
     SignificantChild(ProcessId),
     #[error("Child with id: `{0}` has already been added, ignoring")]
     ChildExists(ProcessId),
+    #[error("Child with id: `{0}` is a Handler and is not a candidate for addition")]
+    ChildIsHandler(ProcessId),
 }

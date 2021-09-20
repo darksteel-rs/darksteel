@@ -37,8 +37,19 @@ where
         })
     }
 
-    pub async fn name(&self, name: String, pid: ProcessId) {
-        self.named.write().await.insert(name, pid);
+    pub async fn name<S: Into<String>>(&self, pid: ProcessId, name: S) {
+        let names = self.named.write().await;
+        let name = name.into();
+
+        if !names.contains_key(&name) {
+            self.named.write().await.insert(name, pid);
+        } else {
+            tracing::error!(
+                "Could not give pid({pid}) name: {name} - Already taken",
+                pid = pid,
+                name = name
+            );
+        }
     }
 
     pub async fn spawn(self: &Arc<Self>, process: Arc<dyn Process<E>>) -> ProcessRef<E> {
@@ -72,6 +83,10 @@ where
         let pid = container.pid();
         let reference = container.get_ref().await;
 
+        if let Some(name) = process.config().name {
+            self.name(pid, name).await;
+        }
+
         container.handle_signals().await;
         self.processes.write().await.insert(pid, container);
         process.handle_spawn(pid, self).await;
@@ -90,11 +105,11 @@ where
         }
     }
 
-    pub async fn get_sender_by_name(
+    pub async fn get_sender_by_name<S: Into<String>>(
         &self,
-        name: &String,
+        name: S,
     ) -> Option<UnboundedSender<ProcessSignal<E>>> {
-        if let Some(pid) = self.named.read().await.get(name) {
+        if let Some(pid) = self.named.read().await.get(&name.into()) {
             if let Some(process) = self.processes.read().await.get(&pid) {
                 Some(process.sender())
             } else {
@@ -117,7 +132,9 @@ where
                         if let Some(process) = self.processes.read().await.get(&pid) {
                             send(&process.sender(), ProcessSignal::Shutdown)
                         } else {
-                            panic!("Received a signal from a process that can't be sent to.");
+                            tracing::warn!(
+                                "Received a signal from a process that can't be sent to."
+                            );
                         }
                     }
                     ExitReason::Shutdown => {

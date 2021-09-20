@@ -1,4 +1,5 @@
 use super::container::ProcessRef;
+use super::handler::Handler;
 use super::runtime::Runtime;
 use super::{
     global_id, ChildRestartPolicy, ExitReason, Process, ProcessConfig, ProcessContext,
@@ -6,10 +7,7 @@ use super::{
 };
 use crate::prelude::TaskError;
 use crate::process::{send, task::*};
-use dyn_clone::DynClone;
 use error::*;
-use futures::future::BoxFuture;
-use futures::Future;
 use state::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
@@ -18,28 +16,6 @@ use tokio::sync::{Mutex, RwLock};
 
 pub mod error;
 mod state;
-
-pub trait SignalHandler<E: TaskError>:
-    Fn(&ProcessSignal<E>, &ProcessContext<E>) -> BoxFuture<'static, ()>
-    + DynClone
-    + Send
-    + Sync
-    + 'static
-{
-}
-
-impl<F, E> SignalHandler<E> for F
-where
-    F: Fn(&ProcessSignal<E>, &ProcessContext<E>) -> BoxFuture<'static, ()>
-        + DynClone
-        + Send
-        + Sync
-        + 'static,
-    E: TaskError,
-{
-}
-
-dyn_clone::clone_trait_object!(<E> SignalHandler<E> where E: TaskError);
 
 #[derive(Copy, Clone, Debug)]
 pub enum RestartPolicy {
@@ -84,7 +60,6 @@ where
 {
     process_config: ProcessConfig,
     supervisor_config: SupervisorConfig,
-    signal_handler: Option<Box<dyn SignalHandler<E>>>,
     child_specs: Vec<Arc<dyn Process<E> + 'static>>,
 }
 
@@ -94,12 +69,15 @@ where
 {
     pub fn with(
         mut self,
-        child: Arc<impl Process<E> + 'static>,
+        child: Arc<dyn Process<E> + 'static>,
     ) -> Result<Self, SupervisorBuilderError> {
-        if child.config().significant()
+        if child.config().significant
             && self.supervisor_config.termination_policy == AutomaticTerminationPolicy::Never
         {
             return Err(SupervisorBuilderError::SignificantChild(child.id()));
+        }
+        if let Some(_) = child.downcast_ref::<Handler<E>>() {
+            return Err(SupervisorBuilderError::ChildIsHandler(child.id()));
         }
         for existing_child in &self.child_specs {
             if child.id() == existing_child.id() {
@@ -110,21 +88,10 @@ where
         Ok(self)
     }
 
-    pub fn handler<F>(mut self, handler: fn(&ProcessSignal<E>, &ProcessContext<E>) -> F) -> Self
-    where
-        F: Future<Output = ()> + Send + Sync + 'static,
-    {
-        self.signal_handler = Some(Box::new(move |signal, context| {
-            Box::pin(handler(signal, context))
-        }));
-        self
-    }
-
     pub fn finish(self) -> Arc<Supervisor<E>> {
         Supervisor::new(
             self.process_config,
             self.supervisor_config,
-            self.signal_handler,
             self.child_specs,
         )
     }
@@ -173,7 +140,6 @@ where
     E: TaskError,
 {
     id: ProcessId,
-    signal_handler: Option<Box<dyn SignalHandler<E>>>,
     child_specs: Vec<Arc<dyn Process<E> + 'static>>,
     child_order: Mutex<ChildOrder>,
     child_refs: RwLock<HashMap<ProcessId, ProcessRef<E>>>,
@@ -188,13 +154,10 @@ where
     fn new(
         process_config: ProcessConfig,
         supervisor_config: SupervisorConfig,
-
-        signal_handler: Option<Box<dyn SignalHandler<E>>>,
         child_specs: Vec<Arc<dyn Process<E> + 'static>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             id: global_id(),
-            signal_handler,
             child_specs,
             child_order: Default::default(),
             child_refs: Default::default(),
@@ -208,7 +171,6 @@ where
             process_config: Default::default(),
             supervisor_config: Default::default(),
             child_specs: Default::default(),
-            signal_handler: Default::default(),
         }
     }
 
@@ -220,7 +182,6 @@ where
             process_config,
             supervisor_config,
             child_specs: Vec::new(),
-            signal_handler: Default::default(),
         }
     }
 }
@@ -233,9 +194,11 @@ where
     fn id(&self) -> ProcessId {
         self.id
     }
+
     fn config(&self) -> ProcessConfig {
         self.process_config.clone()
     }
+
     async fn handle_spawn(&self, pid: ProcessId, runtime: &Arc<Runtime<E>>) {
         for spec in &self.child_specs {
             let child = runtime.spawn_with_parent(spec.clone(), pid).await;
@@ -243,6 +206,7 @@ where
             self.child_refs.write().await.insert(child.pid(), child);
         }
     }
+
     async fn handle_signals(&self, mut context: ProcessContext<E>) {
         let pid = context.pid();
         let mut manager = StateManager::new(
@@ -257,12 +221,8 @@ where
                 .read()
                 .await
                 .iter()
-                .map(|(pid, reference)| (*pid, reference.process().config().restart_policy()))
+                .map(|(pid, reference)| (*pid, reference.process().config().restart_policy))
                 .collect::<HashMap<ProcessId, ChildRestartPolicy>>();
-
-            if let Some(signal_handler) = &self.signal_handler {
-                signal_handler(&signal, &context).await;
-            }
 
             match manager.next_action(&child_policies, &signal) {
                 StateAction::None => (),
