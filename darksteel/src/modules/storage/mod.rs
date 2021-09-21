@@ -20,13 +20,11 @@ struct InternalResource(Arc<RwLock<Box<dyn Any + Send + Sync>>>);
 
 impl InternalResource {
     /// Creates a new Resource.
-    #[tracing::instrument]
     fn new<T: ResourceTrait + Debug>(data: T) -> Self {
         Self(Arc::new(RwLock::new(Box::new(data))))
     }
 
     /// Convert into a typed Resource object.
-    #[tracing::instrument]
     fn as_typed<T: ResourceTrait>(&self) -> Resource<T> {
         Resource(self.0.clone(), PhantomData::<T>)
     }
@@ -41,7 +39,7 @@ where
     T: ResourceTrait + Debug,
 {
     /// Get an immutable reference to the resource.
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     pub async fn read(&self) -> RwLockReadGuard<'_, T> {
         RwLockReadGuard::map(self.0.read().await, |data| {
             // This is actually completely safe as a resource will never be
@@ -51,7 +49,7 @@ where
     }
 
     /// Get a mutable reference to the resource.
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     pub async fn write(&self) -> RwLockMappedWriteGuard<'_, T> {
         RwLockWriteGuard::map(self.0.write().await, |data| {
             // This is actually completely safe as a resource will never be
@@ -69,7 +67,6 @@ pub struct Storage {
 
 impl Storage {
     /// Create a new Storage object.
-    #[tracing::instrument]
     pub fn new() -> Self {
         Self {
             map: Arc::new(Mutex::new(HashMap::new())),
@@ -77,7 +74,7 @@ impl Storage {
     }
 
     /// Get a handle on a Resource within storage.
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     pub fn handle<T: ResourceTrait + Debug>(&self) -> Result<Resource<T>, StorageError> {
         let mut map = self.map.lock().or(Err(StorageError::LockPoisoned))?;
 
@@ -91,7 +88,7 @@ impl Storage {
     }
 
     /// Clear out a resource from storage.
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     pub async fn clear<T: ResourceTrait + Debug>(&self) -> Result<(), StorageError> {
         let map = self.map.lock().or(Err(StorageError::LockPoisoned))?;
         if let Some(resource) = map.get(&TypeId::of::<T>()) {

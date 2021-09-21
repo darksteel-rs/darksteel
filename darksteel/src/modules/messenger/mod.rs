@@ -9,7 +9,7 @@ use unchecked_unwrap::UncheckedUnwrap;
 
 pub mod error;
 
-const MESSAGE_QUEUE_CHANNEL_SIZE: usize = 64;
+const MESSAGE_QUEUE_CHANNEL_SIZE: usize = 256;
 
 #[derive(Debug, Clone)]
 /// A messenger module.
@@ -20,7 +20,6 @@ pub struct Messenger {
 
 impl Messenger {
     /// Create a new messenger.
-    #[tracing::instrument]
     pub fn new(capacity: usize) -> Self {
         Self {
             handles: Arc::new(Mutex::new(HashMap::new())),
@@ -29,7 +28,6 @@ impl Messenger {
     }
 
     /// Get a broadcast channel for a given type
-    #[tracing::instrument]
     pub fn channel<T: Any + Send + Sync + Clone + 'static>(
         &self,
     ) -> Result<(Sender<T>, Receiver<T>), MessageError> {
