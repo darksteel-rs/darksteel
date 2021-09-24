@@ -121,17 +121,32 @@ where
                             active.store(false, Ordering::SeqCst);
                             match result {
                                 Ok(result) => match result {
-                                    Ok(()) => send(
-                                        &tx_parent,
-                                        ProcessSignal::Exit(pid, ExitReason::Normal),
-                                    ),
-                                    Err(error) => send(
-                                        &tx_parent,
-                                        ProcessSignal::Exit(pid, ExitReason::Error(error)),
-                                    ),
+                                    Ok(()) => {
+                                        tracing::info!("Task({pid}) Exited normally", pid = pid);
+                                        send(
+                                            &tx_parent,
+                                            ProcessSignal::Exit(pid, ExitReason::Normal),
+                                        );
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(
+                                            "Task({pid}) Exited with error: {error:?}",
+                                            pid = pid,
+                                            error = error
+                                        );
+                                        send(
+                                            &tx_parent,
+                                            ProcessSignal::Exit(pid, ExitReason::Error(error)),
+                                        );
+                                    }
                                 },
-                                Err(_) => {
-                                    send(&tx_parent, ProcessSignal::Exit(pid, ExitReason::Panic))
+                                Err(error) => {
+                                    tracing::error!(
+                                        "Task({pid}) Panicked: {error:?}",
+                                        pid = pid,
+                                        error = error
+                                    );
+                                    send(&tx_parent, ProcessSignal::Exit(pid, ExitReason::Panic));
                                 }
                             }
                         });

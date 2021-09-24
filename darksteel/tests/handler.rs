@@ -1,9 +1,8 @@
 use darksteel::{prelude::*, process::handler::Handler};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let time = SystemTime::now();
     let mut config = ProcessConfig::default();
 
     config.name("task");
@@ -11,6 +10,7 @@ async fn main() -> anyhow::Result<()> {
     let executor = Environment::new();
     let task = Task::<UniversalError>::new_with_config(config, |_| async move {
         tokio::time::sleep(Duration::from_secs(10)).await;
+        assert!(false);
         Ok(())
     });
     let handler = Handler::<UniversalError>::new(|context| async move {
@@ -22,8 +22,6 @@ async fn main() -> anyhow::Result<()> {
     });
 
     executor.start_multiple(&[task, handler]).await;
-
-    assert!(Duration::from_secs(10) > SystemTime::now().duration_since(time).unwrap());
 
     Ok(())
 }
