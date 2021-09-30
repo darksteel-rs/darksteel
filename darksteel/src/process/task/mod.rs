@@ -103,6 +103,7 @@ where
         let pid = context.pid();
         let runtime = Handle::current();
         let parent = context.parent();
+        let name = context.process().config().name.unwrap_or(String::new());
 
         while let Some(signal) = context.recv().await {
             match signal {
@@ -110,6 +111,7 @@ where
                     let task = self.task.clone();
                     let modules = context.modules();
                     let active = self.active.clone();
+                    let name = name.clone();
 
                     if !self.active.load(Ordering::SeqCst) {
                         active.store(true, Ordering::SeqCst);
@@ -122,7 +124,11 @@ where
                             match result {
                                 Ok(result) => match result {
                                     Ok(()) => {
-                                        tracing::info!("Task({pid}) Exited normally", pid = pid);
+                                        tracing::info!(
+                                            "Task({pid}:{name}) Exited normally",
+                                            pid = pid,
+                                            name = name
+                                        );
                                         send(
                                             &tx_parent,
                                             ProcessSignal::Exit(pid, ExitReason::Normal),
@@ -130,8 +136,9 @@ where
                                     }
                                     Err(error) => {
                                         tracing::error!(
-                                            "Task({pid}) Exited with error: {error:?}",
+                                            "Task({pid}:{name}) Exited with error: {error:?}",
                                             pid = pid,
+                                            name = name,
                                             error = error
                                         );
                                         send(
@@ -142,8 +149,9 @@ where
                                 },
                                 Err(error) => {
                                     tracing::error!(
-                                        "Task({pid}) Panicked: {error:?}",
+                                        "Task({pid}:{name}) Panicked: {error:?}",
                                         pid = pid,
+                                        name = name,
                                         error = error
                                     );
                                     send(&tx_parent, ProcessSignal::Exit(pid, ExitReason::Panic));
@@ -154,8 +162,9 @@ where
                         *self.handle.lock().await = Some(handle);
                     } else {
                         tracing::warn!(
-                            "Attempted to start Task({pid}) - Already active",
-                            pid = pid
+                            "Attempted to start Task({pid}:{name}) - Already active",
+                            pid = pid,
+                            name = name
                         );
                     }
                 }
@@ -224,8 +233,9 @@ where
                                             .await
                                             .map_err(|error| {
                                                 tracing::error!(
-                                                    "Task({pid}) Terminated abnormally: {error:?}",
+                                                    "Task({pid}:{name}) Terminated abnormally: {error:?}",
                                                     pid = pid,
+                                                    name = name,
                                                     error = error
                                                 )
                                             })
@@ -238,8 +248,9 @@ where
                         self.active.store(false, Ordering::SeqCst);
                     } else {
                         tracing::warn!(
-                            "Attempted to terminate Task({pid}) - Already exited",
-                            pid = pid
+                            "Attempted to terminate Task({pid}:{name}) - Already exited",
+                            pid = pid,
+                            name = name
                         );
                     }
                 }
@@ -270,8 +281,9 @@ where
                                             .await
                                             .map_err(|error| {
                                                 tracing::error!(
-                                                    "Task({pid}) Task terminated abnormally during shutdown: {error:?}",
+                                                    "Task({pid}:{name}) Task terminated abnormally during shutdown: {error:?}",
                                                     pid = pid,
+                                                    name = name,
                                                     error = error
                                                 )
                                             })
@@ -285,50 +297,22 @@ where
                         send(&parent, ProcessSignal::Exit(pid, ExitReason::Shutdown));
                         break;
                     } else {
-                        tracing::info!("Shutdown acknowledged on exited Task({pid})", pid = pid);
+                        tracing::info!(
+                            "Shutdown acknowledged on exited Task({pid}:{name})",
+                            pid = pid,
+                            name = name
+                        );
                         send(&parent, ProcessSignal::Exit(pid, ExitReason::Shutdown));
                         break;
                     }
                 }
                 signal => tracing::warn!(
-                    "Task({pid}) received signal `{signal:?}` without delegate",
+                    "Task({pid}:{name}) received signal `{signal:?}` without delegate",
                     pid = pid,
+                    name = name,
                     signal = signal
                 ),
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::error::Error;
-
-    #[derive(Clone, Debug)]
-    struct MyError;
-
-    impl fmt::Display for MyError {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "Error")
-        }
-    }
-
-    impl Error for MyError {
-        fn description(&self) -> &str {
-            "Error"
-        }
-    }
-
-    async fn task(_: Modules) -> TaskResult<MyError> {
-        Ok(())
-    }
-
-    #[tokio::test]
-    // This isn't meant to do anything. It's a compile time check to make
-    // sure that the async functions match the trait required for being a
-    // task.
-    async fn create_task() {
-        let _ = Task::new(task);
     }
 }

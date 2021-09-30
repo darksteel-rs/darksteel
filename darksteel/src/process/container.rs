@@ -16,6 +16,7 @@ where
     E: TaskError,
 {
     pid: ProcessId,
+    process: Arc<dyn Process<E>>,
     tx: UnboundedSender<ProcessSignal<E>>,
     tx_parent: UnboundedSender<ProcessSignal<E>>,
     rx: OwnedMutexGuard<UnboundedReceiver<ProcessSignal<E>>>,
@@ -29,6 +30,10 @@ where
 {
     pub fn pid(&self) -> ProcessId {
         self.pid
+    }
+
+    pub fn process(&self) -> &dyn Process<E> {
+        &*self.process
     }
 
     pub fn sender(&self) -> UnboundedSender<ProcessSignal<E>> {
@@ -134,6 +139,7 @@ where
     pub async fn context(&self) -> ProcessContext<E> {
         ProcessContext {
             pid: self.pid,
+            process: self.process.clone(),
             tx: self.tx.clone(),
             tx_parent: self.tx_parent.clone(),
             rx: self.rx.clone().lock_owned().await,
