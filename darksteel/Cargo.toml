@@ -14,7 +14,7 @@ edition = "2018"
 [dependencies]
 darksteel-codegen = { version = "0.1.0", path = "../darksteel-codegen", package = "darksteel-codegen" }
 thiserror = "1.0"
-tokio = { version = "1.6.1", features = ["full"] }
+tokio = { version = "1.12.0", features = ["full"] }
 tokio-stream = "0.1"
 tonic = "0.5"
 prost = "0.8"
