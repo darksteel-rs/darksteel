@@ -38,11 +38,11 @@ where
     }
 
     pub async fn name<S: Into<String>>(&self, pid: ProcessId, name: S) {
-        let names = self.named.write().await;
+        let mut names = self.named.write().await;
         let name = name.into();
 
         if !names.contains_key(&name) {
-            self.named.write().await.insert(name, pid);
+            names.insert(name, pid);
         } else {
             tracing::error!(
                 "Could not give pid({pid}) name: {name} - Already taken",
