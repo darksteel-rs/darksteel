@@ -7,6 +7,7 @@ use super::{
 };
 use crate::prelude::TaskError;
 use crate::process::{send, task::*};
+use chrono::Duration;
 use error::*;
 use state::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -101,6 +102,10 @@ where
 pub struct SupervisorConfig {
     pub restart_policy: RestartPolicy,
     pub termination_policy: AutomaticTerminationPolicy,
+    /// How many restarts are permitted in an interval.
+    pub restart_intensity: u32,
+    /// How long a restart interval is in seconds.
+    pub restart_interval: Duration,
 }
 
 impl Default for SupervisorConfig {
@@ -108,6 +113,8 @@ impl Default for SupervisorConfig {
         Self {
             restart_policy: RestartPolicy::OneForAll,
             termination_policy: AutomaticTerminationPolicy::Never,
+            restart_intensity: 1,
+            restart_interval: Duration::seconds(5),
         }
     }
 }
@@ -231,6 +238,26 @@ where
                         send(&child.sender(), ProcessSignal::Start);
                     } else {
                         tracing::error!("Could not find Child({pid})", pid = pid);
+                    }
+                    match finalise {
+                        Finalise::None => (),
+                        Finalise::Start => send(&parent, ProcessSignal::Active(pid)),
+                        Finalise::Terminate => {
+                            send(&parent, ProcessSignal::Exit(pid, ExitReason::Terminate))
+                        }
+                        Finalise::Shutdown => {
+                            send(&parent, ProcessSignal::Exit(pid, ExitReason::Shutdown));
+                            break;
+                        }
+                    }
+                }
+                StateAction::StartMultiple(pids, finalise) => {
+                    for pid in &pids {
+                        if let Some(child) = self.child_refs.read().await.get(&pid) {
+                            send(&child.sender(), ProcessSignal::Start);
+                        } else {
+                            tracing::error!("Could not find Child({pid})", pid = pid);
+                        }
                     }
                     match finalise {
                         Finalise::None => (),

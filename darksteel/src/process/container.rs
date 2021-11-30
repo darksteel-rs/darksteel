@@ -68,6 +68,19 @@ where
     tx_parent: UnboundedSender<ProcessSignal<E>>,
 }
 
+impl<E> std::fmt::Debug for ProcessRef<E>
+where
+    E: TaskError,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessRef")
+            .field("pid", &self.pid)
+            .field("tx", &self.tx)
+            .field("tx_parent", &self.tx_parent)
+            .finish()
+    }
+}
+
 impl<E> ProcessRef<E>
 where
     E: TaskError,

@@ -1,6 +1,7 @@
 use super::*;
 use crate::prelude::TaskError;
 use crate::process::ChildRestartPolicy;
+use chrono::prelude::*;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -22,9 +23,6 @@ pub enum StateTransition {
         waiting_on: ProcessId,
     },
     Shutdown {
-        pids_required: BTreeSet<ProcessId>,
-    },
-    RestartOne {
         pids_required: BTreeSet<ProcessId>,
     },
     RestartAll {
@@ -56,6 +54,9 @@ pub enum StateAction {
     /// to finalise a state transition and let its parent know that it has
     /// finished starting by sending a `Signal`.
     Start(ProcessId, Finalise),
+    /// Tell the supervisor it needs to start multiple processes. This is only
+    /// used in non-ordered restart policies like OneForOne.
+    StartMultiple(BTreeSet<ProcessId>, Finalise),
     /// Tell the supervisor it needs to terminate a process.
     Terminate(ProcessId),
     /// Tell the supervisor it needs to shutdown and provides it a list of pids
@@ -72,6 +73,8 @@ pub struct StateManager {
     managed_pids: ChildOrder,
     do_not_restart: BTreeSet<ProcessId>,
     state: StateTransition,
+    interval_timestamp: DateTime<Utc>,
+    interval_restarts: u32,
 }
 
 /// The `StateManager` determines how the supervisor shifts between various
@@ -83,6 +86,8 @@ impl StateManager {
             managed_pids,
             do_not_restart: Default::default(),
             state: StateTransition::None,
+            interval_timestamp: Utc::now(),
+            interval_restarts: 0,
         }
     }
 
@@ -195,21 +200,20 @@ impl StateManager {
         }
     }
 
-    fn restart_one(&mut self, child_pid: &u64, finalise: Finalise) -> StateAction {
-        if !self.do_not_restart.contains(child_pid) {
-            let pids = BTreeSet::new();
-
-            self.state = StateTransition::RestartOne {
-                pids_required: pids,
-            };
-
-            StateAction::Start(*child_pid, finalise)
-        } else {
-            StateAction::None
+    fn restart_one(&mut self, exited: &BTreeSet<ProcessId>, finalise: Finalise) -> StateAction {
+        if self.restart_exceeded() {
+            return self.terminate(exited.clone());
         }
+
+        self.state = StateTransition::None;
+        StateAction::StartMultiple(exited.clone(), finalise)
     }
 
     fn restart_all(&mut self, exited: &BTreeSet<ProcessId>, finalise: Finalise) -> StateAction {
+        if self.restart_exceeded() {
+            return self.terminate(exited.clone());
+        }
+
         let mut pids_exit = VecDeque::new();
         let mut pids_active = VecDeque::new();
 
@@ -259,10 +263,14 @@ impl StateManager {
 
     fn restart_rest(
         &mut self,
-        lowest_pid: &u64,
+        lowest_pid: &ProcessId,
         exited: &BTreeSet<ProcessId>,
         finalise: Finalise,
     ) -> StateAction {
+        if self.restart_exceeded() {
+            return self.terminate(exited.clone());
+        }
+
         let mut pids_exit = VecDeque::new();
         let mut pids_active = VecDeque::new();
 
@@ -314,6 +322,33 @@ impl StateManager {
         }
     }
 
+    /// Check if a restart amount has exceeded the interval and intensity. It is
+    /// implied by calling this function that a pid has exited.
+    fn restart_exceeded(&mut self) -> bool {
+        // If the intensity is set to 0, we can restart an unlimited in an
+        // interval.
+        if self.config.restart_intensity != 0 {
+            let now = Utc::now();
+
+            // Check when the last interval was
+            if now.signed_duration_since(self.interval_timestamp) > self.config.restart_interval {
+                // It's a new interval
+                self.interval_timestamp = now;
+                self.interval_restarts = 1;
+            } else {
+                // We are in the current interval
+                self.interval_restarts += 1;
+
+                // Have we exceeded our set limit of restarts for the interval?
+                if self.interval_restarts > self.config.restart_intensity {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     /// Based on the incoming `Signal`, determine the next action the state
     /// should take.
     pub fn next_action<E: TaskError>(
@@ -347,7 +382,9 @@ impl StateManager {
                     }
 
                     match self.config.restart_policy {
-                        RestartPolicy::OneForOne => self.restart_one(child_pid, Finalise::None),
+                        RestartPolicy::OneForOne => {
+                            self.restart_one(&Self::exit(*child_pid), Finalise::None)
+                        }
                         RestartPolicy::OneForAll => {
                             self.restart_all(&Self::exit(*child_pid), Finalise::None)
                         }
@@ -377,39 +414,6 @@ impl StateManager {
                     }
                     _ => StateAction::None,
                 },
-                _ => StateAction::None,
-            },
-            StateTransition::RestartOne {
-                ref mut pids_required,
-            } => match signal {
-                ProcessSignal::Exit(child_pid, reason) => {
-                    if Self::do_not_restart(child_pid, reason, policies) {
-                        self.do_not_restart.insert(*child_pid);
-                        // Remove it from the start list
-                        pids_required.remove(child_pid);
-                    }
-                    if !self.do_not_restart.contains(child_pid) {
-                        pids_required.insert(*child_pid);
-                        StateAction::Start(*child_pid, Finalise::None)
-                    } else {
-                        if pids_required.is_empty() {
-                            self.state = StateTransition::None;
-                        }
-
-                        StateAction::None
-                    }
-                }
-                ProcessSignal::Active(child_pid) => {
-                    pids_required.remove(&child_pid);
-
-                    if pids_required.is_empty() {
-                        self.state = StateTransition::None
-                    }
-
-                    StateAction::None
-                }
-                ProcessSignal::Terminate => self.terminate(None),
-                ProcessSignal::Shutdown => self.shutdown(),
                 _ => StateAction::None,
             },
             StateTransition::RestartAll {
@@ -699,7 +703,7 @@ impl StateManager {
 
                                 match self.config.restart_policy {
                                     RestartPolicy::OneForOne => {
-                                        self.restart_one(child_pid, Finalise::Start)
+                                        self.restart_one(&pids_exited, Finalise::Start)
                                     }
                                     RestartPolicy::OneForAll => {
                                         self.restart_all(&pids_exited, Finalise::Start)
@@ -742,6 +746,7 @@ impl StateManager {
             } => match signal {
                 ProcessSignal::Exit(child_pid, _) => {
                     if child_pid == waiting_on {
+                        tracing::debug!("Received exit from Process({pid})", pid = child_pid);
                         if let Some(next_pid) = pids_exit.pop_front() {
                             *waiting_on = next_pid;
                             StateAction::Terminate(*waiting_on)

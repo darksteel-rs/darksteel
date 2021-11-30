@@ -1,6 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
-use super::{container::ProcessRef, task::ProcessId, Process, ProcessContainer, ProcessSignal};
+use super::{
+    container::ProcessRef, task::ProcessId, ChildRestartPolicy, Process, ProcessContainer,
+    ProcessSignal,
+};
 use crate::{
     prelude::{Modules, TaskError},
     process::{send, ExitReason},
@@ -131,10 +134,85 @@ where
             match signal {
                 ProcessSignal::Exit(pid, reason) => match reason {
                     ExitReason::Normal => {
-                        // TODO: Processes in root should be restarted depending
-                        // on their ChildRestartPolicy
+                        tracing::info!("Root Process({pid}) exited normally", pid = pid);
                         if let Some(process) = self.processes.read().await.get(&pid) {
-                            send(&process.sender(), ProcessSignal::Shutdown)
+                            match process.process().config().restart_policy {
+                                ChildRestartPolicy::Permanent => {
+                                    send(&process.sender(), ProcessSignal::Start);
+                                }
+                                ChildRestartPolicy::Temporary => {
+                                    send(&process.sender(), ProcessSignal::Shutdown);
+                                }
+                                ChildRestartPolicy::Transient => {
+                                    send(&process.sender(), ProcessSignal::Shutdown);
+                                }
+                            }
+                        } else {
+                            tracing::warn!(
+                                "Received a signal from a process that can't be sent to."
+                            );
+                        }
+                    }
+                    ExitReason::Error(error) => {
+                        tracing::info!(
+                            "Root Process({pid}) exited with error: {error:?}",
+                            pid = pid,
+                            error = error
+                        );
+                        if let Some(process) = self.processes.read().await.get(&pid) {
+                            match process.process().config().restart_policy {
+                                ChildRestartPolicy::Permanent => {
+                                    send(&process.sender(), ProcessSignal::Start);
+                                }
+                                ChildRestartPolicy::Temporary => {
+                                    send(&process.sender(), ProcessSignal::Shutdown);
+                                }
+                                ChildRestartPolicy::Transient => {
+                                    send(&process.sender(), ProcessSignal::Start);
+                                }
+                            }
+                        } else {
+                            tracing::warn!(
+                                "Received a signal from a process that can't be sent to."
+                            );
+                        }
+                    }
+                    ExitReason::Panic => {
+                        tracing::info!("Root Process({pid}) panicked", pid = pid);
+                        if let Some(process) = self.processes.read().await.get(&pid) {
+                            match process.process().config().restart_policy {
+                                ChildRestartPolicy::Permanent => {
+                                    send(&process.sender(), ProcessSignal::Start);
+                                }
+                                ChildRestartPolicy::Temporary => {
+                                    send(&process.sender(), ProcessSignal::Shutdown);
+                                }
+                                ChildRestartPolicy::Transient => {
+                                    send(&process.sender(), ProcessSignal::Start);
+                                }
+                            }
+                        } else {
+                            tracing::warn!(
+                                "Received a signal from a process that can't be sent to."
+                            );
+                        }
+                    }
+                    ExitReason::Terminate => {
+                        tracing::info!("Root Process({pid}) was terminated", pid = pid);
+                        if let Some(process) = self.processes.read().await.get(&pid) {
+                            match process.process().config().restart_policy {
+                                ChildRestartPolicy::Permanent => {
+                                    send(&process.sender(), ProcessSignal::Start);
+                                }
+                                ChildRestartPolicy::Temporary => {
+                                    send(&process.sender(), ProcessSignal::Shutdown);
+                                }
+                                // If a root process is terminated, it is not
+                                // considered abnormal.
+                                ChildRestartPolicy::Transient => {
+                                    send(&process.sender(), ProcessSignal::Shutdown);
+                                }
+                            }
                         } else {
                             tracing::warn!(
                                 "Received a signal from a process that can't be sent to."
@@ -142,6 +220,7 @@ where
                         }
                     }
                     ExitReason::Shutdown => {
+                        tracing::info!("Root Process({pid}) shutdown", pid = pid);
                         let mut processes = self.processes.write().await;
 
                         processes.remove(&pid);
@@ -150,7 +229,6 @@ where
                             break;
                         }
                     }
-                    _ => (),
                 },
                 _ => (),
             }
