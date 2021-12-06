@@ -10,7 +10,7 @@ use unchecked_unwrap::UncheckedUnwrap;
 #[derive(Debug, Clone)]
 /// A messenger module.
 pub struct Broadcast {
-    handles: Arc<Mutex<HashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>>>,
+    handles: Arc<Mutex<HashMap<(TypeId, usize), Box<dyn Any + Send + Sync + 'static>>>>,
 }
 
 impl Broadcast {
@@ -27,7 +27,7 @@ impl Broadcast {
     ) -> Result<(Sender<T>, Receiver<T>), MessageError> {
         match self.handles.lock() {
             Ok(mut map) => {
-                if let Some(handle) = map.get(&TypeId::of::<T>()) {
+                if let Some(handle) = map.get(&(TypeId::of::<T>(), CAPACITY)) {
                     // This is completely safe. We never create an object
                     // without a TypeId as the index.
                     let sender = unsafe { handle.downcast_ref::<Sender<T>>().unchecked_unwrap() };
@@ -39,7 +39,7 @@ impl Broadcast {
                     let (sender, _) = channel::<T>(CAPACITY);
                     let handle_sender = sender.clone();
                     let handle_receiver = sender.subscribe();
-                    map.insert(TypeId::of::<T>(), Box::new(sender));
+                    map.insert((TypeId::of::<T>(), CAPACITY), Box::new(sender));
 
                     Ok((handle_sender, handle_receiver))
                 }
