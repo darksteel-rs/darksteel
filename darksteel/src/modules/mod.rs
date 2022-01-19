@@ -33,11 +33,18 @@ impl Modules {
             raw_module.downcast_ref::<T>().unwrap().clone()
         } else {
             drop(modules);
+
             let module = T::module(self).await;
             let mut modules = self.modules.write().await;
 
-            modules.insert(TypeId::of::<T>(), Box::new(module.clone()));
-            module
+            // We're going to check again to ensure there is zero possibility
+            // of overwriting a module.
+            if let Some(raw_module) = modules.get(&TypeId::of::<T>()) {
+                raw_module.downcast_ref::<T>().unwrap().clone()
+            } else {
+                modules.insert(TypeId::of::<T>(), Box::new(module.clone()));
+                module
+            }
         }
     }
 }
