@@ -3,7 +3,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum NodeError {
     #[error("Raft Config Error: {0}")]
-    RaftConfig(#[from] async_raft::error::ConfigError),
+    RaftConfig(#[from] openraft::error::ConfigError),
     #[error("Router Error: {0}")]
     Router(#[from] RouterError),
 
@@ -22,9 +22,9 @@ pub enum NodeConnectionError {
 #[derive(Debug, Error)]
 pub enum CommitError {
     #[error("Raft Client Read Error: {0}")]
-    RaftClientRead(#[from] async_raft::error::ClientReadError),
+    RaftClientRead(#[from] openraft::error::ClientReadError),
     #[error("Raft Client Write Error: {0}")]
-    RaftClientWrite(#[from] async_raft::error::ClientWriteError<super::ClientRequest>),
+    RaftClientWrite(#[from] openraft::error::ClientWriteError),
     #[error("Mutator Error: ")]
     Mutator(#[from] MutatorError),
     #[error("Could not commit to distributed state, no leader exists")]

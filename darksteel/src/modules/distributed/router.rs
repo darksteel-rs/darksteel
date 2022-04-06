@@ -5,20 +5,24 @@ use super::{
         raft_actions_client::RaftActionsClient,
         raft_actions_server::{RaftActions, RaftActionsServer},
         AppendEntriesRequest as AppendEntriesRequestRpc,
-        AppendEntriesResponse as AppendEntriesResponseRpc, ConflictOpt as ConflictOptRpc, Empty,
-        Entry as EntryRpc, InfoResponse, InstallSnapshotRequest as InstallSnapshotRequestRpc,
-        InstallSnapshotResponse as InstallSnapshotResponseRpc, MembershipConfig,
-        VoteRequest as VoteRequestRpc, VoteResponse as VoteResponseRpc,
+        AppendEntriesResponse as AppendEntriesResponseRpc, Empty, Entry as EntryRpc, InfoResponse,
+        InstallSnapshotRequest as InstallSnapshotRequestRpc,
+        InstallSnapshotResponse as InstallSnapshotResponseRpc, LogId as LogIdRpc, MembershipConfig,
+        SnapshotMeta as SnapshotMetaRpc, VoteRequest as VoteRequestRpc,
+        VoteResponse as VoteResponseRpc,
     },
     ClientRequest, RaftNode,
 };
-use async_raft::async_trait::async_trait;
-use async_raft::raft::{AppendEntriesRequest, AppendEntriesResponse, ConflictOpt, Entry};
-use async_raft::raft::{InstallSnapshotRequest, InstallSnapshotResponse};
-use async_raft::raft::{VoteRequest, VoteResponse};
-use async_raft::{NodeId, RaftNetwork};
+use openraft::raft::{InstallSnapshotRequest, InstallSnapshotResponse};
+use openraft::raft::{VoteRequest, VoteResponse};
+use openraft::{async_trait::async_trait, LogId};
+use openraft::{
+    raft::{AppendEntriesRequest, AppendEntriesResponse, Entry},
+    SnapshotMeta,
+};
+use openraft::{NodeId, RaftNetwork};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     net::IpAddr,
 };
 use std::{net::SocketAddr, sync::Arc};
@@ -39,14 +43,59 @@ impl RaftRpc {
     }
 }
 
+impl From<LogIdRpc> for LogId {
+    fn from(log_id: LogIdRpc) -> Self {
+        Self {
+            term: log_id.term,
+            index: log_id.index,
+        }
+    }
+}
+
+impl From<LogId> for LogIdRpc {
+    fn from(log_id: LogId) -> Self {
+        Self {
+            term: log_id.term,
+            index: log_id.index,
+        }
+    }
+}
+
+impl TryFrom<SnapshotMetaRpc> for SnapshotMeta {
+    type Error = Status;
+
+    fn try_from(meta: SnapshotMetaRpc) -> Result<Self, Self::Error> {
+        Ok(Self {
+            last_log_id: match meta.last_log_id {
+                Some(log_id) => log_id.into(),
+                None => {
+                    return Err(Status::aborted(
+                        "Missing `last_log_id` in `SnapshotMeta` RPC",
+                    ))
+                }
+            },
+            snapshot_id: meta.snapshot_id,
+        })
+    }
+}
+
+impl From<SnapshotMeta> for SnapshotMetaRpc {
+    fn from(meta: SnapshotMeta) -> Self {
+        Self {
+            last_log_id: Some(meta.last_log_id.into()),
+            snapshot_id: meta.snapshot_id,
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl RaftActions for RaftRpc {
     async fn info(&self, _: Request<Empty>) -> Result<Response<InfoResponse>, Status> {
-        use async_raft::State;
+        use openraft::State;
 
         let metrics = self.node.metrics().borrow().clone();
         let state = match metrics.state {
-            State::NonVoter => "NonVoter",
+            State::Learner => "Learner",
             State::Follower => "Follower",
             State::Candidate => "Candidate",
             State::Leader => "Leader",
@@ -63,14 +112,11 @@ impl RaftActions for RaftRpc {
             membership_config: Some(MembershipConfig {
                 members: metrics
                     .membership_config
-                    .members
+                    .membership
+                    .all_nodes()
                     .iter()
                     .map(|member| *member)
                     .collect(),
-                members_after_consensus: match metrics.membership_config.members_after_consensus {
-                    Some(members) => members.iter().map(|member| *member).collect(),
-                    None => Vec::new(),
-                },
             }),
         }))
     }
@@ -85,30 +131,37 @@ impl RaftActions for RaftRpc {
             .append_entries(AppendEntriesRequest::<ClientRequest> {
                 term: request.term,
                 leader_id: request.leader_id,
-                prev_log_index: request.prev_log_index,
-                prev_log_term: request.prev_log_term,
+                prev_log_id: LogId {
+                    term: request.prev_log_term,
+                    index: request.prev_log_index,
+                },
                 entries: request
                     .entries
                     .into_iter()
                     .map(|entry| Entry::<ClientRequest> {
-                        term: entry.term,
-                        index: entry.index,
+                        log_id: LogId {
+                            term: entry.term,
+                            index: entry.index,
+                        },
                         payload: bincode::deserialize(entry.payload.as_slice()).unwrap(),
                     })
                     .collect(),
-                leader_commit: request.leader_commit,
+                leader_commit: request
+                    .leader_commit
+                    .ok_or_else(|| Status::aborted("Missing `leader_commit`"))?
+                    .into(),
             })
             .await
             .unwrap();
 
         Ok(Response::new(AppendEntriesResponseRpc {
             term: response.term,
-            success: response.success,
-            conflict_opt: match response.conflict_opt {
-                Some(conflict_opt) => Some(ConflictOptRpc {
-                    term: conflict_opt.term,
-                    index: conflict_opt.index,
-                }),
+            matched: match response.matched {
+                Some(matched) => Some(matched.into()),
+                None => None,
+            },
+            conflict: match response.conflict {
+                Some(conflict) => Some(conflict.into()),
                 None => None,
             },
         }))
@@ -124,8 +177,10 @@ impl RaftActions for RaftRpc {
             .install_snapshot(InstallSnapshotRequest {
                 term: request.term,
                 leader_id: request.leader_id,
-                last_included_index: request.last_included_index,
-                last_included_term: request.last_included_term,
+                meta: request
+                    .meta
+                    .ok_or_else(|| Status::aborted("Missing `meta`"))?
+                    .try_into()?,
                 offset: request.offset,
                 data: request.data,
                 done: request.done,
@@ -148,14 +203,17 @@ impl RaftActions for RaftRpc {
             .vote(VoteRequest {
                 term: request.term,
                 candidate_id: request.candidate_id,
-                last_log_index: request.last_log_index,
-                last_log_term: request.last_log_term,
+                last_log_id: request
+                    .last_log_id
+                    .ok_or_else(|| Status::aborted("Missing `last_log_id`"))?
+                    .into(),
             })
             .await
             .unwrap();
 
         Ok(Response::new(VoteResponseRpc {
             term: response.term,
+            last_log_id: Some(response.last_log_id.into()),
             vote_granted: response.vote_granted,
         }))
     }
@@ -196,7 +254,7 @@ impl Router {
         })
     }
 
-    pub async fn discovered_node_ids(&self) -> HashSet<NodeId> {
+    pub async fn discovered_node_ids(&self) -> BTreeSet<NodeId> {
         self.discovered_nodes
             .read()
             .await
@@ -259,7 +317,7 @@ impl Router {
 #[async_trait]
 impl RaftNetwork<ClientRequest> for Router {
     /// Send an AppendEntries RPC to the target Raft node.
-    async fn append_entries(
+    async fn send_append_entries(
         &self,
         target: NodeId,
         rpc: AppendEntriesRequest<ClientRequest>,
@@ -272,30 +330,30 @@ impl RaftNetwork<ClientRequest> for Router {
                 .append_entries(Request::new(AppendEntriesRequestRpc {
                     term: rpc.term,
                     leader_id: rpc.leader_id,
-                    prev_log_index: rpc.prev_log_index,
-                    prev_log_term: rpc.prev_log_term,
+                    prev_log_index: rpc.prev_log_id.index,
+                    prev_log_term: rpc.prev_log_id.term,
                     entries: rpc
                         .entries
                         .into_iter()
                         .map(|entry| EntryRpc {
-                            term: entry.term,
-                            index: entry.index,
+                            term: entry.log_id.term,
+                            index: entry.log_id.index,
                             payload: bincode::serialize(&entry.payload).unwrap(),
                         })
                         .collect(),
-                    leader_commit: rpc.leader_commit,
+                    leader_commit: Some(rpc.leader_commit.into()),
                 }))
                 .await?
                 .into_inner();
 
             Ok(AppendEntriesResponse {
                 term: response.term,
-                success: response.success,
-                conflict_opt: match response.conflict_opt {
-                    Some(conflict_opt) => Some(ConflictOpt {
-                        term: conflict_opt.term,
-                        index: conflict_opt.index,
-                    }),
+                matched: match response.matched {
+                    Some(matched) => Some(matched.into()),
+                    None => None,
+                },
+                conflict: match response.conflict {
+                    Some(conflict) => Some(conflict.into()),
                     None => None,
                 },
             })
@@ -305,7 +363,7 @@ impl RaftNetwork<ClientRequest> for Router {
     }
 
     /// Send an InstallSnapshot RPC to the target Raft node.
-    async fn install_snapshot(
+    async fn send_install_snapshot(
         &self,
         target: NodeId,
         rpc: InstallSnapshotRequest,
@@ -318,8 +376,7 @@ impl RaftNetwork<ClientRequest> for Router {
                 .install_snapshot(Request::new(InstallSnapshotRequestRpc {
                     term: rpc.term,
                     leader_id: rpc.leader_id,
-                    last_included_index: rpc.last_included_index,
-                    last_included_term: rpc.last_included_term,
+                    meta: Some(rpc.meta.into()),
                     offset: rpc.offset,
                     data: rpc.data,
                     done: rpc.done,
@@ -336,7 +393,7 @@ impl RaftNetwork<ClientRequest> for Router {
     }
 
     /// Send a RequestVote RPC to the target Raft node.
-    async fn vote(&self, target: NodeId, rpc: VoteRequest) -> anyhow::Result<VoteResponse> {
+    async fn send_vote(&self, target: NodeId, rpc: VoteRequest) -> anyhow::Result<VoteResponse> {
         let mut discovered_nodes = self.discovered_nodes.write().await;
 
         if let Some(connection) = discovered_nodes.get_mut(&target) {
@@ -345,8 +402,7 @@ impl RaftNetwork<ClientRequest> for Router {
                 .vote(Request::new(VoteRequestRpc {
                     term: rpc.term,
                     candidate_id: rpc.candidate_id,
-                    last_log_index: rpc.last_log_index,
-                    last_log_term: rpc.last_log_term,
+                    last_log_id: Some(rpc.last_log_id.into()),
                 }))
                 .await?
                 .into_inner();
@@ -354,6 +410,10 @@ impl RaftNetwork<ClientRequest> for Router {
             Ok(VoteResponse {
                 term: response.term,
                 vote_granted: response.vote_granted,
+                last_log_id: response
+                    .last_log_id
+                    .ok_or_else(|| Status::aborted("Missing `last_log_id`"))?
+                    .into(),
             })
         } else {
             anyhow::bail!("Target node not found in routing table");

@@ -1,10 +1,10 @@
 use crate::identity::Identity;
 use crate::identity::IdentityTrait;
-use async_raft::{AppData, AppDataResponse, Raft};
 use downcast_rs::impl_downcast;
 use downcast_rs::Downcast;
 use dyn_clone::DynClone;
 use error::*;
+use openraft::{AppData, AppDataResponse, Raft};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::hash_map::DefaultHasher;
@@ -24,8 +24,6 @@ pub(crate) mod rpc {
 /// A concrete Raft type.
 pub(crate) type RaftNode = Raft<ClientRequest, ClientResponse, router::Router, store::Store>;
 
-const ERR_INCONSISTENT_LOG: &str = "The received query relied on a log entry that doesn't exist.";
-
 /// The application data request type.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientRequest {
@@ -41,7 +39,7 @@ impl AppData for ClientRequest {}
 
 /// The application data response type.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ClientResponse(Vec<u8>);
+pub struct ClientResponse(Option<Vec<u8>>);
 
 impl AppDataResponse for ClientResponse {}
 

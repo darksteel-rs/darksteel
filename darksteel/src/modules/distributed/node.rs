@@ -1,7 +1,7 @@
 use super::discovery::{Discovery, HostLookup};
 use super::*;
-use async_raft::{raft::ClientWriteRequest, Config};
-use async_raft::{NodeId, State};
+use openraft::{raft::ClientWriteRequest, Config};
+use openraft::{NodeId, State};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{
@@ -97,7 +97,7 @@ impl Node {
         cluster_name: String,
         initial_state: HashMap<Identity, Box<dyn DistributedState>>,
     ) -> Result<Self, NodeError> {
-        let config = Arc::new(Config::build(cluster_name).validate()?);
+        let config = Arc::new(Config::build(&[&cluster_name])?);
         let store = store::Store::new(initial_state);
         let router = router::Router::new(address, discovery);
         let node = RaftNode::new(store.id(), config, router.clone(), store.clone());

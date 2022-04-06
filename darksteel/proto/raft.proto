@@ -11,9 +11,18 @@ service RaftActions {
 
 message Empty {}
 
+message LogId {
+  uint64 term = 1;
+  uint64 index = 2;
+}
+
+message SnapshotMeta {
+  LogId last_log_id = 1;
+  string snapshot_id = 2;
+}
+
 message MembershipConfig {
   repeated uint64 members = 1;
-  repeated uint64 members_after_consensus = 2;
 }
 
 message InfoResponse {
@@ -38,28 +47,22 @@ message AppendEntriesRequest {
   uint64 prev_log_index = 3;
   uint64 prev_log_term = 4;
   repeated Entry entries = 5;
-  uint64 leader_commit = 6;
-}
-
-message ConflictOpt {
-  uint64 term = 1;
-  uint64 index = 2;
+  LogId leader_commit = 6;
 }
 
 message AppendEntriesResponse {
   uint64 term = 1;
-  bool success = 2;
-  ConflictOpt conflict_opt = 3;
+  LogId matched = 2;
+  LogId conflict = 3;
 }
 
 message InstallSnapshotRequest {
   uint64 term = 1;
   uint64 leader_id = 2;
-  uint64 last_included_index = 3;
-  uint64 last_included_term = 4;
-  uint64 offset = 5;
-  bytes data = 6;
-  bool done = 7;
+  SnapshotMeta meta = 3;
+  uint64 offset = 4;
+  bytes data = 5;
+  bool done = 6;
 }
 
 message InstallSnapshotResponse {
@@ -69,11 +72,11 @@ message InstallSnapshotResponse {
 message VoteRequest {
   uint64 term = 1;
   uint64 candidate_id = 2;
-  uint64 last_log_index = 3;
-  uint64 last_log_term = 4;
+  LogId last_log_id = 3;
 }
 
 message VoteResponse {
   uint64 term = 1;
   bool vote_granted = 2;
+  LogId last_log_id = 3;
 }

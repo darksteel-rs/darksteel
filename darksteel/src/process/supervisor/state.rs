@@ -325,8 +325,8 @@ impl StateManager {
     /// Check if a restart amount has exceeded the interval and intensity. It is
     /// implied by calling this function that a pid has exited.
     fn restart_exceeded(&mut self) -> bool {
-        // If the intensity is set to 0, we can restart an unlimited in an
-        // interval.
+        // If the intensity is set to 0, we can restart an unlimited amount in
+        // an interval.
         if self.config.restart_intensity != 0 {
             let now = Utc::now();
 
