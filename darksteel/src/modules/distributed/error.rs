@@ -1,16 +1,17 @@
 use thiserror::Error;
 
+/// An error produced by a distributed [`Node`](crate::modules::distributed::node::Node).
 #[derive(Debug, Error)]
 pub enum NodeError {
     #[error("Raft Config Error: {0}")]
     RaftConfig(#[from] openraft::error::ConfigError),
     #[error("Router Error: {0}")]
     Router(#[from] RouterError),
-
     #[error("Node Error: {0}")]
     Any(#[from] anyhow::Error),
 }
 
+/// A connection error from a distributed [`Node`](crate::modules::distributed::node::Node).
 #[derive(Debug, Error)]
 pub enum NodeConnectionError {
     #[error("Invalid Uri Error: {0}")]
@@ -19,6 +20,7 @@ pub enum NodeConnectionError {
     Transport(#[from] tonic::transport::Error),
 }
 
+/// A commit error from a distributed [`Node`](crate::modules::distributed::node::Node).
 #[derive(Debug, Error)]
 pub enum CommitError {
     #[error("Raft Client Read Error: {0}")]
@@ -33,6 +35,7 @@ pub enum CommitError {
     NotLeader,
 }
 
+/// An internal distributed state machine error.
 #[derive(Debug, Error)]
 pub enum StateMachineError {
     #[error("The state machine is missing the state type referenced")]
@@ -41,12 +44,14 @@ pub enum StateMachineError {
     Mutator(#[from] MutatorError),
 }
 
+/// A mutator error.
 #[derive(Debug, Error)]
 pub enum MutatorError {
     #[error("Error with bincode: {0}")]
     Bincode(#[from] bincode::Error),
 }
 
+/// An error relating to the router of a distributed [`Node`](crate::modules::distributed::node::Node).
 #[derive(Debug, Error)]
 pub enum RouterError {
     #[error("Transport Error: {0}")]

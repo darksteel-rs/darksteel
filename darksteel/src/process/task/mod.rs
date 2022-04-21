@@ -1,6 +1,5 @@
 use super::runtime::Runtime;
 use super::{global_id, send, ChildTerminationPolicy, Process, ProcessConfig, ProcessContext};
-use crate::modules::Modules;
 use crate::process::{ExitReason, ProcessSignal};
 use dyn_clone::DynClone;
 use futures::{
@@ -16,30 +15,39 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
-pub mod error;
+mod context;
+mod error;
 
-pub use error::TaskError;
+pub use context::TaskContext;
+pub use error::TaskErrorTrait;
 
+/// An alias for a [`u64`]
 pub type ProcessId = u64;
+/// An alias for a `Result<(), E>`
 pub type TaskResult<E> = Result<(), E>;
 
-pub trait TaskTrait<E: TaskError>:
-    Sync + Fn(Modules) -> BoxFuture<'static, TaskResult<E>> + DynClone + Send + 'static
+pub(crate) trait TaskTrait<E: TaskErrorTrait>:
+    Sync + FnOnce(TaskContext<E>) -> BoxFuture<'static, TaskResult<E>> + DynClone + Send + 'static
 {
 }
 
 impl<F, E> TaskTrait<E> for F
 where
-    F: Sync + Fn(Modules) -> BoxFuture<'static, TaskResult<E>> + DynClone + Send + 'static,
-    E: TaskError,
+    F: Sync
+        + FnOnce(TaskContext<E>) -> BoxFuture<'static, TaskResult<E>>
+        + DynClone
+        + Send
+        + 'static,
+    E: TaskErrorTrait,
 {
 }
 
-dyn_clone::clone_trait_object!(<E> TaskTrait<E> where E: TaskError);
+dyn_clone::clone_trait_object!(<E> TaskTrait<E> where E: TaskErrorTrait);
 
+/// A task that runs within the darksteel [`Environment`](crate::environment::Environment).
 pub struct Task<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     id: ProcessId,
     task: Box<dyn TaskTrait<E>>,
@@ -50,22 +58,25 @@ where
 
 impl<E> Task<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
-    pub fn new<F>(task: fn(Modules) -> F) -> Arc<Task<E>>
+    /// Create a new task with a default configuration.
+    pub fn new<T, F>(task: T) -> Arc<Task<E>>
     where
+        T: Send + Sync + Clone + FnOnce(TaskContext<E>) -> F + 'static,
         F: Future<Output = TaskResult<E>> + Send + 'static,
     {
         Self::new_with_config(Default::default(), task)
     }
-
-    pub fn new_with_config<F>(config: ProcessConfig, task: fn(Modules) -> F) -> Arc<Task<E>>
+    /// Create a new task with a manual configuration.
+    pub fn new_with_config<T, F>(config: ProcessConfig, task: T) -> Arc<Task<E>>
     where
+        T: Send + Sync + Clone + FnOnce(TaskContext<E>) -> F + 'static,
         F: Future<Output = TaskResult<E>> + Send + 'static,
     {
         Arc::new(Task {
             id: global_id(),
-            task: Box::new(move |modules| Box::pin(task(modules))),
+            task: Box::new(move |context| Box::pin(task(context))),
             handle: Default::default(),
             active: Arc::new(AtomicBool::new(false)),
             config,
@@ -75,17 +86,20 @@ where
 
 impl<E> Debug for Task<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Task").field("id", &self.id).finish()
+        f.debug_struct("Task")
+            .field("id", &self.id)
+            .field("config", &self.config)
+            .finish()
     }
 }
 
 #[crate::async_trait]
 impl<E> Process<E> for Task<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     fn id(&self) -> ProcessId {
         self.id
@@ -101,7 +115,7 @@ where
 
     async fn handle_signals(&self, mut context: ProcessContext<E>) {
         let pid = context.pid();
-        let runtime = Handle::current();
+        let runtime_raw = Handle::current();
         let parent = context.parent();
         let name = context.process().config().name.unwrap_or(String::new());
 
@@ -112,14 +126,17 @@ where
                     let modules = context.modules();
                     let active = self.active.clone();
                     let name = name.clone();
+                    let process = context.get_ref().await;
+                    let runtime = context.runtime();
+                    let context = TaskContext::new(modules, process, runtime);
 
                     if !self.active.load(Ordering::SeqCst) {
                         active.store(true, Ordering::SeqCst);
 
                         let tx_parent = parent.clone();
-                        let handle = runtime.spawn(async move {
+                        let handle = runtime_raw.spawn(async move {
                             send(&tx_parent, ProcessSignal::Active(pid));
-                            let result = AssertUnwindSafe((task)(modules)).catch_unwind().await;
+                            let result = AssertUnwindSafe((task)(context)).catch_unwind().await;
                             active.store(false, Ordering::SeqCst);
                             match result {
                                 Ok(result) => match result {

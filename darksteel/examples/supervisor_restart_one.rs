@@ -1,7 +1,7 @@
 use darksteel::prelude::*;
 use std::time::Duration;
 
-async fn task_short(_: Modules) -> TaskResult<UniversalError> {
+async fn task_short(_: TaskContext<TaskError>) -> TaskResult<TaskError> {
     tracing::info!("Sleeping a short time!");
     tokio::time::sleep(Duration::from_secs(1)).await;
     tracing::info!("Slept a short time!");
@@ -17,7 +17,7 @@ async fn main() -> anyhow::Result<()> {
     let short1 = Task::new(task_short);
     let short2 = Task::new(task_short);
 
-    config.restart_policy = RestartPolicy::OneForOne;
+    config.restart_policy = SupervisorRestartPolicy::OneForOne;
 
     let supervisor = Supervisor::build_with_config(Default::default(), config)
         .with(short1)?

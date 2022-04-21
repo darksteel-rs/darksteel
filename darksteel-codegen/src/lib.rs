@@ -47,7 +47,7 @@ pub fn distributed(_: TokenStream, item: TokenStream) -> TokenStream {
     if generics.lifetimes().count() > 0 {
         abort!(
             generics,
-            "Distributed implementations should not have any extraneous lifetimes."
+            "Distributed implementations should not have any lifetimes."
         );
     }
 
@@ -121,7 +121,6 @@ pub fn distributed(_: TokenStream, item: TokenStream) -> TokenStream {
     let create_variants = input.items.iter().filter_map(|item| match item {
         ImplItem::Method(method) => {
             let function_ident = method.sig.ident.clone();
-            let function_create_ident = format_ident!("create_{}", function_ident);
             let enum_ident = Ident::new(
                 &function_ident.to_string().to_case(Case::UpperCamel),
                 method.sig.ident.span(),
@@ -150,11 +149,13 @@ pub fn distributed(_: TokenStream, item: TokenStream) -> TokenStream {
 
             if args.len() > 0 {
                 Some(quote! {
-                    fn #function_create_ident (#(#signature),*) -> #enum_name { #enum_name :: #enum_ident { #(#args),* } }
+                    #[inline(always)]
+                    fn #function_ident (#(#signature),*) -> #enum_name { #enum_name :: #enum_ident { #(#args),* } }
                 })
             } else {
                 Some(quote! {
-                    fn #function_create_ident () -> #enum_name { #enum_name :: #enum_ident }
+                    #[inline(always)]
+                    fn #function_ident () -> #enum_name { #enum_name :: #enum_ident }
                 })
             }
         }
@@ -164,6 +165,7 @@ pub fn distributed(_: TokenStream, item: TokenStream) -> TokenStream {
     let match_variants = input.items.iter().filter_map(|item| match item {
         ImplItem::Method(method) => {
             let function_ident = method.sig.ident.clone();
+            let function_real_ident = format_ident!("_{}", function_ident);
             let enum_ident = Ident::new(
                 &function_ident.to_string().to_case(Case::UpperCamel),
                 method.sig.ident.span(),
@@ -185,16 +187,27 @@ pub fn distributed(_: TokenStream, item: TokenStream) -> TokenStream {
             // `store` is the variable in the `Mutator` trait
             if args.len() > 0 {
                 Some(quote! {
-                    #enum_name :: #enum_ident { #(#args),* } => store.#function_ident (#(#args),*)
+                    #enum_name :: #enum_ident { #(#args),* } => self.#function_real_ident (#(#args),*)
                 })
             } else {
                 Some(quote! {
-                    #enum_name :: #enum_ident => store.#function_ident ()
+                    #enum_name :: #enum_ident => self.#function_real_ident ()
                 })
             }
         }
         _ => None,
     });
+
+    let mut input = input.clone();
+
+    for item in &mut input.items {
+        match item {
+            ImplItem::Method(method) => {
+                method.sig.ident = format_ident!("_{}", method.sig.ident);
+            }
+            _ => (),
+        }
+    }
 
     let expanded = quote! {
         #input
@@ -211,25 +224,23 @@ pub fn distributed(_: TokenStream, item: TokenStream) -> TokenStream {
         #[typetag::serde]
         impl darksteel::modules::distributed::DistributedState for #full_name {
             fn mutate(&mut self, data: Vec<u8>) -> Result<Vec<u8>, darksteel::modules::distributed::error::MutatorError> {
-                let mutator: #enum_name = bincode::deserialize(data.as_slice())?;
-                mutator.mutate(self);
+                let mutation: #enum_name = bincode::deserialize(data.as_slice())?;
+
+                match mutation {
+                    #(#match_variants),*
+                }
+
                 Ok(bincode::serialize(self)?)
             }
         }
 
-        impl #generics #enum_name #generics {
-            fn mutate(self, store: &mut #full_name) {
-                match self {
-                    #(#match_variants),*
-                }
-            }
-        }
-
         impl #generics darksteel::modules::distributed::Mutator for #enum_name #generics {
+            #[inline(always)]
             fn state_id() -> darksteel::identity::Identity {
                 #full_name ::ID
             }
 
+            #[inline(always)]
             fn bytes(&self) -> Result<Vec<u8>, darksteel::modules::distributed::error::MutatorError> {
                 Ok(bincode::serialize(self)?)
             }
@@ -245,7 +256,7 @@ pub fn distributed(_: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 #[proc_macro_error]
-/// A convenience function for implementing `IdentityTrait`
+/// A convenience function for implementing an identity trait.
 pub fn identity(arguments: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemStruct);
     let arguments = parse_macro_input!(arguments as AttributeArgs);

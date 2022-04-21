@@ -1,7 +1,7 @@
 use super::error::*;
 use crate::modules::{IntoModule, Modules};
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::sync::{mpsc::*, Mutex as AsyncMutex, MutexGuard};
@@ -19,16 +19,19 @@ impl<T> OwnedReceiver<T>
 where
     T: Any + Send + Sync + Clone + 'static,
 {
-    pub fn new(receiver: UnboundedReceiver<T>) -> Self {
+    /// Create a new receiver.
+    fn new(receiver: UnboundedReceiver<T>) -> Self {
         Self {
             rx: Arc::new(AsyncMutex::new(receiver)),
         }
     }
 
+    /// Acquire a handle to the underlying receiver.
     pub async fn handle(&self) -> MutexGuard<'_, UnboundedReceiver<T>> {
         self.rx.lock().await
     }
 
+    /// Drain all the messages in the channel.
     pub async fn drain(&self) {
         let mut receiver = self.rx.lock().await;
 
@@ -41,16 +44,16 @@ where
 }
 
 #[derive(Debug, Clone)]
-/// A messenger module.
+/// An MPSC messenger module.
 pub struct Mpsc {
-    handles: Arc<Mutex<HashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>>>,
+    handles: Arc<Mutex<BTreeMap<TypeId, Box<dyn Any + Send + Sync + 'static>>>>,
 }
 
 impl Mpsc {
     /// Create a new messenger.
     pub fn new() -> Self {
         Self {
-            handles: Arc::new(Mutex::new(HashMap::new())),
+            handles: Default::default(),
         }
     }
 

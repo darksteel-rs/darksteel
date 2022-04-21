@@ -3,7 +3,7 @@ use darksteel::prelude::*;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let executor = Environment::new();
-    let task = Task::<UniversalError>::new(|_| async {
+    let task = Task::<TaskError>::new(|_| async {
         println!("Hello, world!");
         Ok(())
     });

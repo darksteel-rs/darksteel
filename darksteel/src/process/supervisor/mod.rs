@@ -1,11 +1,10 @@
 use super::container::ProcessRef;
-use super::handler::Handler;
 use super::runtime::Runtime;
 use super::{
     global_id, ChildRestartPolicy, ExitReason, Process, ProcessConfig, ProcessContext,
     ProcessSignal,
 };
-use crate::prelude::TaskError;
+use crate::prelude::TaskErrorTrait;
 use crate::process::{send, task::*};
 use chrono::Duration;
 use error::*;
@@ -16,10 +15,11 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 pub mod error;
-mod state;
+pub(crate) mod state;
 
+/// A restart policy for how children in a supervisor are restarted.
 #[derive(Copy, Clone, Debug)]
-pub enum RestartPolicy {
+pub enum SupervisorRestartPolicy {
     /// If a child process terminates, all other child processes are terminated,
     /// and then all child processes, including the terminated one, are
     /// restarted.
@@ -33,6 +33,8 @@ pub enum RestartPolicy {
     RestForOne,
 }
 
+/// A termination policy to determine if a supervisor will terminate based on
+/// how many of its children terminate.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum AutomaticTerminationPolicy {
     /// Automatic termination is disabled.
@@ -55,9 +57,10 @@ pub enum AutomaticTerminationPolicy {
     All,
 }
 
+/// A struct for assisting in the creation of supervisor processes.
 pub struct SupervisorBuilder<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     process_config: ProcessConfig,
     supervisor_config: SupervisorConfig,
@@ -66,8 +69,9 @@ where
 
 impl<E> SupervisorBuilder<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
+    /// Include a process underneath this supervisor.
     pub fn with(
         mut self,
         child: Arc<dyn Process<E> + 'static>,
@@ -77,9 +81,6 @@ where
         {
             return Err(SupervisorBuilderError::SignificantChild(child.id()));
         }
-        if let Some(_) = child.downcast_ref::<Handler<E>>() {
-            return Err(SupervisorBuilderError::ChildIsHandler(child.id()));
-        }
         for existing_child in &self.child_specs {
             if child.id() == existing_child.id() {
                 return Err(SupervisorBuilderError::ChildExists(child.id()));
@@ -88,7 +89,7 @@ where
         self.child_specs.push(child);
         Ok(self)
     }
-
+    /// Finish building the supervisor and instance it.
     pub fn finish(self) -> Arc<Supervisor<E>> {
         Supervisor::new(
             self.process_config,
@@ -98,9 +99,11 @@ where
     }
 }
 
+/// A config that determines how a supervisor will behave under certain
+/// conditions while it's running.
 #[derive(Clone, Debug)]
 pub struct SupervisorConfig {
-    pub restart_policy: RestartPolicy,
+    pub restart_policy: SupervisorRestartPolicy,
     pub termination_policy: AutomaticTerminationPolicy,
     /// How many restarts are permitted in an interval.
     pub restart_intensity: u32,
@@ -111,7 +114,7 @@ pub struct SupervisorConfig {
 impl Default for SupervisorConfig {
     fn default() -> Self {
         Self {
-            restart_policy: RestartPolicy::OneForAll,
+            restart_policy: SupervisorRestartPolicy::OneForAll,
             termination_policy: AutomaticTerminationPolicy::Never,
             restart_intensity: 1,
             restart_interval: Duration::seconds(5),
@@ -119,8 +122,10 @@ impl Default for SupervisorConfig {
     }
 }
 
+/// A struct for storing pids in order and converting that list into different
+/// formats.
 #[derive(Clone, Debug, Default)]
-pub struct ChildOrder(BTreeMap<ProcessId, u16>, u16);
+pub(crate) struct ChildOrder(BTreeMap<ProcessId, u16>, u16);
 
 impl ChildOrder {
     /// Insert new pid
@@ -142,9 +147,10 @@ impl ChildOrder {
     }
 }
 
+/// A process that can supervise other processes underneath it.
 pub struct Supervisor<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     id: ProcessId,
     child_specs: Vec<Arc<dyn Process<E> + 'static>>,
@@ -156,8 +162,9 @@ where
 
 impl<E> Supervisor<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
+    /// Create a new supervisor.
     fn new(
         process_config: ProcessConfig,
         supervisor_config: SupervisorConfig,
@@ -172,7 +179,7 @@ where
             supervisor_config,
         })
     }
-
+    /// Create a [`SupervisorBuilder`] instance.
     pub fn build() -> SupervisorBuilder<E> {
         SupervisorBuilder {
             process_config: Default::default(),
@@ -180,7 +187,7 @@ where
             child_specs: Default::default(),
         }
     }
-
+    /// Create a [`SupervisorBuilder`] instance with a manual config.
     pub fn build_with_config(
         process_config: ProcessConfig,
         supervisor_config: SupervisorConfig,
@@ -196,7 +203,7 @@ where
 #[crate::async_trait]
 impl<E> Process<E> for Supervisor<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     fn id(&self) -> ProcessId {
         self.id

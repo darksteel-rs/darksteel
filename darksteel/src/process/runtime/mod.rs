@@ -5,7 +5,7 @@ use super::{
     ProcessSignal,
 };
 use crate::{
-    prelude::{Modules, TaskError},
+    prelude::{Modules, TaskErrorTrait},
     process::{send, ExitReason},
 };
 use tokio::sync::{
@@ -13,9 +13,10 @@ use tokio::sync::{
     Mutex, RwLock,
 };
 
+/// The underlying runtime of the environment.
 pub struct Runtime<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     processes: RwLock<HashMap<ProcessId, ProcessContainer<E>>>,
     named: RwLock<HashMap<String, ProcessId>>,
@@ -26,8 +27,9 @@ where
 
 impl<E> Runtime<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
+    /// Create a new runtime.
     pub(crate) fn new(modules: Modules) -> Arc<Self> {
         let (tx_signal_root, rx_signal_root) = unbounded_channel();
 
@@ -39,7 +41,7 @@ where
             rx_signal_root: Mutex::new(rx_signal_root),
         })
     }
-
+    /// Name a pid currently in the system.
     pub async fn name<S: Into<String>>(&self, pid: ProcessId, name: S) {
         let mut names = self.named.write().await;
         let name = name.into();
@@ -54,11 +56,11 @@ where
             );
         }
     }
-
+    /// Spawn a process at the root of the runtime.
     pub async fn spawn(self: &Arc<Self>, process: Arc<dyn Process<E>>) -> ProcessRef<E> {
         self.spawn_with_parent(process, None).await
     }
-
+    /// Spawn a process with a given parent pid.
     pub async fn spawn_with_parent<P: Into<Option<ProcessId>>>(
         self: &Arc<Self>,
         process: Arc<dyn Process<E>>,
@@ -100,7 +102,7 @@ where
 
         reference
     }
-
+    /// Get a process's send handle by its pid.
     pub async fn get_sender_by_pid(
         &self,
         pid: ProcessId,
@@ -111,7 +113,7 @@ where
             None
         }
     }
-
+    /// Get a process's send handle by its name.
     pub async fn get_sender_by_name<S: Into<String>>(
         &self,
         name: S,
@@ -126,8 +128,8 @@ where
             None
         }
     }
-
-    pub async fn block_on_all(&self) {
+    /// Boot the runtime and block until all processes shutdown.
+    pub(crate) async fn block_on_all(&self) {
         let mut inbox = self.rx_signal_root.lock().await;
 
         while let Some(signal) = inbox.recv().await {

@@ -1,14 +1,20 @@
+use crate::process::task::{Task, TaskErrorTrait};
+
 use super::discovery::{Discovery, HostLookup};
 use super::*;
-use openraft::{raft::ClientWriteRequest, Config};
-use openraft::{NodeId, State};
-use std::collections::HashMap;
-use std::net::IpAddr;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
+use openraft::RaftMetrics;
+use openraft::{raft::ClientWriteRequest, Config, NodeId, State};
+use std::collections::BTreeSet;
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 use tokio::sync::broadcast::{channel, Receiver, Sender};
+use tokio::sync::watch::Receiver as WatchReceiver;
 
 const NODE_SIGNAL_CHANNEL_SIZE: usize = 64;
 static GLOBAL_SERIAL_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -99,7 +105,7 @@ impl Node {
     ) -> Result<Self, NodeError> {
         let config = Arc::new(Config::build(&[&cluster_name])?);
         let store = store::Store::new(initial_state);
-        let router = router::Router::new(address, discovery);
+        let router = router::Router::new(store.id(), address, discovery);
         let node = RaftNode::new(store.id(), config, router.clone(), store.clone());
         let (events, _) = channel(NODE_SIGNAL_CHANNEL_SIZE);
 
@@ -119,52 +125,26 @@ impl Node {
         self.node.current_leader().await
     }
 
-    pub async fn metrics(&self) {
-        let mut rx = self.node.metrics();
-        let mut last = rx.borrow().clone();
-
-        while rx.changed().await.is_ok() {
-            let current = rx.borrow().clone();
-
-            if current.current_leader != last.current_leader {
-                if let Err(error) = self
-                    .events
-                    .send(NodeSignal::LeaderChanged(current.current_leader))
-                {
-                    tracing::error!(
-                        "Could not sender leader changed signal: {error}",
-                        error = error
-                    );
-                }
-            }
-            if current.state != last.state {
-                if let Err(error) = self.events.send(NodeSignal::StateChanged(current.state)) {
-                    tracing::error!(
-                        "Could not sender leader changed signal: {error}",
-                        error = error
-                    );
-                }
-            }
-
-            last = current;
-        }
+    pub async fn metrics(&self) -> WatchReceiver<RaftMetrics> {
+        self.node.metrics()
     }
 
-    pub fn sub_events(&self) -> Receiver<NodeSignal> {
+    pub async fn peers(&self) -> BTreeSet<NodeId> {
+        self.router.peers().await
+    }
+
+    pub fn subscribe_events(&self) -> Receiver<NodeSignal> {
         self.events.subscribe()
     }
 
-    pub async fn start(&self) -> Result<(), NodeError> {
-        tokio::select! {
-            server = self.router.server_task(self.node.clone()) => Ok(server?),
-            metrics = self.metrics() => Ok(metrics)
-        }
+    pub async fn task<E: TaskErrorTrait>(&self) -> Result<Arc<Task<E>>, NodeError> {
+        Ok(self.router.server_task(self.node.clone()).await?)
     }
 
     pub async fn initialise(&self) -> Result<(), NodeError> {
         let node_ids;
         self.router.discover_nodes().await?;
-        node_ids = self.router.discovered_node_ids().await;
+        node_ids = self.router.peers().await;
 
         if self.router.is_cluster_pristine().await {
             if let Err(_) = self.node.initialize(node_ids).await {

@@ -1,27 +1,27 @@
 use super::error::*;
 use crate::modules::{IntoModule, Modules};
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::sync::broadcast::*;
 use unchecked_unwrap::UncheckedUnwrap;
 
 #[derive(Debug, Clone)]
-/// A messenger module.
+/// A broadcast messenger module.
 pub struct Broadcast {
-    handles: Arc<Mutex<HashMap<(TypeId, usize), Box<dyn Any + Send + Sync + 'static>>>>,
+    handles: Arc<Mutex<BTreeMap<(TypeId, usize), Box<dyn Any + Send + Sync + 'static>>>>,
 }
 
 impl Broadcast {
     /// Create a new messenger.
     pub fn new() -> Self {
         Self {
-            handles: Arc::new(Mutex::new(HashMap::new())),
+            handles: Default::default(),
         }
     }
 
-    /// Get a broadcast channel for a given type
+    /// Get a broadcast channel for a given type and capacity.
     pub fn channel<T: Any + Send + Sync + Clone + 'static, const CAPACITY: usize>(
         &self,
     ) -> Result<(Sender<T>, Receiver<T>), MessageError> {

@@ -1,14 +1,14 @@
 use darksteel::prelude::*;
 use std::time::Duration;
 
-async fn task_short(_: Modules) -> TaskResult<UniversalError> {
+async fn task_short(_: TaskContext<TaskError>) -> TaskResult<TaskError> {
     println!("Sleeping a short time!");
     tokio::time::sleep(Duration::from_secs(1)).await;
     println!("Slept a short time!");
     Ok(())
 }
 
-async fn task_long(_: Modules) -> TaskResult<UniversalError> {
+async fn task_long(_: TaskContext<TaskError>) -> TaskResult<TaskError> {
     println!("Sleeping a long time!");
     tokio::time::sleep(Duration::from_secs(3)).await;
     println!("Slept a long time!");
@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let short = Task::new(task_short);
     let long = Task::new(task_long);
 
-    config.restart_policy = RestartPolicy::RestForOne;
+    config.restart_policy = SupervisorRestartPolicy::RestForOne;
 
     let supervisor = Supervisor::build_with_config(Default::default(), config)
         .with(long)?

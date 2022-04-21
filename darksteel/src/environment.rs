@@ -1,13 +1,12 @@
-use crate::error::UniversalError;
 use crate::modules::Modules;
-use crate::process::{runtime::Runtime, task::TaskError};
+use crate::process::{runtime::Runtime, task::TaskErrorTrait};
 use crate::process::{send, Process, ProcessSignal};
 use std::sync::Arc;
 
-/// The darksteel executor.
-pub struct Environment<E = UniversalError>
+/// The darksteel environment.
+pub struct Environment<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     modules: Modules,
     runtime: Arc<Runtime<E>>,
@@ -15,8 +14,9 @@ where
 
 impl<E> Environment<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
+    /// Create a new [`Environment`] instance.
     pub fn new() -> Self {
         let modules = Modules::new();
         Self {
@@ -24,15 +24,15 @@ where
             runtime: Runtime::new(modules),
         }
     }
-
+    /// Acquire a handle to the current [`Modules`] instance of the environment.
     pub fn modules(&self) -> Modules {
         self.modules.clone()
     }
-
+    /// Start a single task.
     pub async fn start(&self, process: Arc<dyn Process<E> + 'static>) {
         self.start_multiple(&[process]).await;
     }
-
+    /// Start multiple tasks.
     pub async fn start_multiple(&self, processes: &[Arc<dyn Process<E>>]) {
         for process in processes {
             let reference = self.runtime.spawn(process.clone()).await;

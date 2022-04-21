@@ -1,5 +1,7 @@
-use darksteel::modules::distributed::node::NodeConfig;
-use darksteel::modules::distributed::{discovery::Discovery, node::Node};
+use darksteel::modules::distributed::{
+    discovery::Discovery,
+    node::{Node, NodeConfig},
+};
 use darksteel::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -73,6 +75,7 @@ async fn cluster_form() -> anyhow::Result<()> {
     interval.tick().await;
 
     for node in &nodes {
+        assert_eq!(node.peers().await.len(), 3);
         assert_ne!(node.leader().await, None);
     }
 
@@ -107,7 +110,7 @@ async fn cluster_distribute() -> anyhow::Result<()> {
 
     for node in &nodes {
         if Some(node.id()) == node.leader().await {
-            let mutation = StateMachine::create_update("It works!".into());
+            let mutation = StateMachine::update("It works!".into());
             node.commit(mutation).await?;
         }
     }
@@ -117,6 +120,9 @@ async fn cluster_distribute() -> anyhow::Result<()> {
     for node in &nodes {
         if let Some(state) = node.state::<StateMachine>().await {
             assert_eq!(state.state(), "It works!");
+            assert_eq!(node.peers().await.len(), 3);
+        } else {
+            panic!("Could not get `StateMachine`");
         }
     }
 

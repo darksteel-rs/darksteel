@@ -14,7 +14,7 @@ pub mod error;
 pub trait ResourceTrait: Any + Send + Sync + Sized + Default {}
 impl<T> ResourceTrait for T where T: Any + Send + Sync + Sized + Default {}
 
-/// A universal resource type for transmitting data inside darksteel.
+/// An untyped universal resource type.
 #[derive(Debug, Clone)]
 struct InternalResource(Arc<RwLock<Box<dyn Any + Send + Sync>>>);
 
@@ -42,7 +42,7 @@ where
     #[tracing::instrument(skip_all)]
     pub async fn read(&self) -> RwLockReadGuard<'_, T> {
         RwLockReadGuard::map(self.0.read().await, |data| {
-            // This is actually completely safe as a resource will never be
+            // This is completely safe as a resource will never be
             // created with the wrong type.
             unsafe { data.downcast_ref::<T>().unchecked_unwrap() }
         })
@@ -52,7 +52,7 @@ where
     #[tracing::instrument(skip_all)]
     pub async fn write(&self) -> RwLockMappedWriteGuard<'_, T> {
         RwLockWriteGuard::map(self.0.write().await, |data| {
-            // This is actually completely safe as a resource will never be
+            // This is completely safe as a resource will never be
             // created with the wrong type.
             unsafe { data.downcast_mut::<T>().unchecked_unwrap() }
         })

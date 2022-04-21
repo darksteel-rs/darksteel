@@ -1,5 +1,5 @@
 use super::*;
-use crate::prelude::TaskError;
+use crate::prelude::TaskErrorTrait;
 use crate::process::ChildRestartPolicy;
 use chrono::prelude::*;
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -68,7 +68,7 @@ pub enum StateAction {
 }
 
 #[derive(Debug)]
-pub struct StateManager {
+pub(crate) struct StateManager {
     config: SupervisorConfig,
     managed_pids: ChildOrder,
     do_not_restart: BTreeSet<ProcessId>,
@@ -114,7 +114,7 @@ impl StateManager {
         }
     }
 
-    fn do_not_restart<E: TaskError>(
+    fn do_not_restart<E: TaskErrorTrait>(
         pid: &ProcessId,
         reason: &ExitReason<E>,
         policies: &HashMap<ProcessId, ChildRestartPolicy>,
@@ -351,7 +351,7 @@ impl StateManager {
 
     /// Based on the incoming `Signal`, determine the next action the state
     /// should take.
-    pub fn next_action<E: TaskError>(
+    pub fn next_action<E: TaskErrorTrait>(
         &mut self,
         policies: &HashMap<ProcessId, ChildRestartPolicy>,
         signal: &ProcessSignal<E>,
@@ -382,13 +382,13 @@ impl StateManager {
                     }
 
                     match self.config.restart_policy {
-                        RestartPolicy::OneForOne => {
+                        SupervisorRestartPolicy::OneForOne => {
                             self.restart_one(&Self::exit(*child_pid), Finalise::None)
                         }
-                        RestartPolicy::OneForAll => {
+                        SupervisorRestartPolicy::OneForAll => {
                             self.restart_all(&Self::exit(*child_pid), Finalise::None)
                         }
-                        RestartPolicy::RestForOne => {
+                        SupervisorRestartPolicy::RestForOne => {
                             self.restart_rest(child_pid, &Self::exit(*child_pid), Finalise::None)
                         }
                     }
@@ -702,13 +702,13 @@ impl StateManager {
                                 let pids_exited = pids_exited.clone();
 
                                 match self.config.restart_policy {
-                                    RestartPolicy::OneForOne => {
+                                    SupervisorRestartPolicy::OneForOne => {
                                         self.restart_one(&pids_exited, Finalise::Start)
                                     }
-                                    RestartPolicy::OneForAll => {
+                                    SupervisorRestartPolicy::OneForAll => {
                                         self.restart_all(&pids_exited, Finalise::Start)
                                     }
-                                    RestartPolicy::RestForOne => {
+                                    SupervisorRestartPolicy::RestForOne => {
                                         self.restart_rest(child_pid, &pids_exited, Finalise::Start)
                                     }
                                 }

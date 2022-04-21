@@ -1,3 +1,5 @@
+use crate::process::task::{Task, TaskErrorTrait};
+
 use super::{
     discovery::Discovery,
     error::*,
@@ -26,7 +28,10 @@ use std::{
     net::IpAddr,
 };
 use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::RwLock;
+use tokio::sync::{
+    watch::{self, Sender},
+    RwLock,
+};
 use tonic::transport::{Channel, Endpoint};
 use tonic::{transport::Server, Request, Response, Status};
 
@@ -35,11 +40,12 @@ const GLOBAL_PORT: u16 = 42069;
 
 pub struct RaftRpc {
     node: RaftNode,
+    tx_shutdown: Sender<()>,
 }
 
 impl RaftRpc {
-    pub fn new(node: RaftNode) -> Self {
-        Self { node }
+    pub fn new(node: RaftNode, tx_shutdown: Sender<()>) -> Self {
+        Self { node, tx_shutdown }
     }
 }
 
@@ -152,7 +158,12 @@ impl RaftActions for RaftRpc {
                     .into(),
             })
             .await
-            .unwrap();
+            .map_err(|error| {
+                // We don't care if this fails. If the receiver is dropped, the
+                // consequence is the same.
+                self.tx_shutdown.send(()).ok();
+                Status::aborted(format!("Could not append entries: {:?}", error))
+            })?;
 
         Ok(Response::new(AppendEntriesResponseRpc {
             term: response.term,
@@ -186,7 +197,12 @@ impl RaftActions for RaftRpc {
                 done: request.done,
             })
             .await
-            .unwrap();
+            .map_err(|error| {
+                // We don't care if this fails. If the receiver is dropped, the
+                // consequence is the same.
+                self.tx_shutdown.send(()).ok();
+                Status::aborted(format!("Could not install snapshot: {:?}", error))
+            })?;
 
         Ok(Response::new(InstallSnapshotResponseRpc {
             term: response.term,
@@ -209,7 +225,12 @@ impl RaftActions for RaftRpc {
                     .into(),
             })
             .await
-            .unwrap();
+            .map_err(|error| {
+                // We don't care if this fails. If the receiver is dropped, the
+                // consequence is the same.
+                self.tx_shutdown.send(()).ok();
+                Status::aborted(format!("Could not vote: {:?}", error))
+            })?;
 
         Ok(Response::new(VoteResponseRpc {
             term: response.term,
@@ -237,6 +258,7 @@ impl NodeConnection {
 }
 
 pub struct Router {
+    id: NodeId,
     address: IpAddr,
     /// Discovery method
     discovery: Box<dyn Discovery>,
@@ -246,15 +268,16 @@ pub struct Router {
 
 impl Router {
     /// Create a new instance.
-    pub fn new(address: IpAddr, discovery: Box<dyn Discovery>) -> Arc<Self> {
+    pub fn new(id: NodeId, address: IpAddr, discovery: Box<dyn Discovery>) -> Arc<Self> {
         Arc::new(Self {
+            id,
             address,
             discovery,
             discovered_nodes: Default::default(),
         })
     }
 
-    pub async fn discovered_node_ids(&self) -> BTreeSet<NodeId> {
+    pub async fn peers(&self) -> BTreeSet<NodeId> {
         self.discovered_nodes
             .read()
             .await
@@ -273,10 +296,15 @@ impl Router {
             {
                 if let Ok(info) = connection.client().info(Empty {}).await {
                     let id = info.into_inner().id;
-                    discovered_nodes.insert(id, connection);
+
+                    if id != self.id {
+                        discovered_nodes.insert(id, connection);
+                    }
                 } else {
-                    tracing::warn!("Could not reach client: {}", address);
+                    tracing::warn!("Could not send message to client: {}", address);
                 }
+            } else {
+                tracing::warn!("Could not reach client: {}", address);
             }
         }
 
@@ -300,23 +328,37 @@ impl Router {
         pristine
     }
 
-    pub async fn server_task(&self, raft_node: RaftNode) -> Result<(), RouterError> {
+    pub async fn server_task<E: TaskErrorTrait>(
+        &self,
+        node: RaftNode,
+    ) -> Result<Arc<Task<E>>, RouterError> {
         let address = SocketAddr::new(self.address, GLOBAL_PORT);
+        let node = node.clone();
 
         self.discover_nodes().await?;
 
-        Server::builder()
-            .add_service(RaftActionsServer::new(RaftRpc::new(raft_node)))
-            .serve(address)
-            .await?;
+        Ok(Task::new(move |_| async move {
+            let (tx, mut rx) = watch::channel(());
 
-        Ok(())
+            Server::builder()
+                .add_service(RaftActionsServer::new(RaftRpc::new(node, tx)))
+                .serve_with_shutdown(address, async {
+                    match rx.changed().await {
+                        Ok(_) => tracing::error!("Node Error - shutting down."),
+                        Err(error) => tracing::error!("Node Error: {:?} - shutting down.", error),
+                    }
+                })
+                .await
+                .map_err(|error| E::internal(error))?;
+
+            Ok(())
+        }))
     }
 }
 
 #[async_trait]
 impl RaftNetwork<ClientRequest> for Router {
-    /// Send an AppendEntries RPC to the target Raft node.
+    /// Send an AppendEntriesRequest RPC to the target Raft node.
     async fn send_append_entries(
         &self,
         target: NodeId,
@@ -362,7 +404,7 @@ impl RaftNetwork<ClientRequest> for Router {
         }
     }
 
-    /// Send an InstallSnapshot RPC to the target Raft node.
+    /// Send an InstallSnapshotRequest RPC to the target Raft node.
     async fn send_install_snapshot(
         &self,
         target: NodeId,
@@ -392,7 +434,7 @@ impl RaftNetwork<ClientRequest> for Router {
         }
     }
 
-    /// Send a RequestVote RPC to the target Raft node.
+    /// Send a VoteRequest RPC to the target Raft node.
     async fn send_vote(&self, target: NodeId, rpc: VoteRequest) -> anyhow::Result<VoteResponse> {
         let mut discovered_nodes = self.discovered_nodes.write().await;
 

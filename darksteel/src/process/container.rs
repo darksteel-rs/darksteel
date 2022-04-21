@@ -1,6 +1,6 @@
 use self::{runtime::Runtime, task::ProcessId};
 use super::*;
-use crate::prelude::{Modules, TaskError};
+use crate::prelude::{Modules, TaskErrorTrait};
 use std::sync::{Arc, Weak};
 use tokio::{
     runtime::Handle,
@@ -11,56 +11,68 @@ use tokio::{
     task::JoinHandle,
 };
 
+/// A context derived from process internals.
 pub struct ProcessContext<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     pid: ProcessId,
+    modules: Modules,
     process: Arc<dyn Process<E>>,
     tx: UnboundedSender<ProcessSignal<E>>,
     tx_parent: UnboundedSender<ProcessSignal<E>>,
     rx: OwnedMutexGuard<UnboundedReceiver<ProcessSignal<E>>>,
-    modules: Modules,
     runtime: Weak<Runtime<E>>,
 }
 
 impl<E> ProcessContext<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     pub fn pid(&self) -> ProcessId {
         self.pid
     }
-
+    /// Get a reference to the [`Process`](super::Process).
     pub fn process(&self) -> &dyn Process<E> {
         &*self.process
     }
-
+    /// Derive a reference from the context.
+    pub async fn get_ref(&self) -> ProcessRef<E> {
+        ProcessRef {
+            pid: self.pid,
+            process: self.process.clone(),
+            tx: self.tx.clone(),
+            tx_parent: self.tx_parent.clone(),
+        }
+    }
+    /// Get a sender handle to the process.
     pub fn sender(&self) -> UnboundedSender<ProcessSignal<E>> {
         self.tx.clone()
     }
-
+    /// Get a sender handle to the process's parent.
     pub fn parent(&self) -> UnboundedSender<ProcessSignal<E>> {
         self.tx_parent.clone()
     }
-
+    /// Receive a signal sent to the process.
+    #[inline(always)]
     pub async fn recv(&mut self) -> Option<ProcessSignal<E>> {
         self.rx.recv().await
     }
-
+    /// Get a handle to the modules provider.
     pub fn modules(&self) -> Modules {
         self.modules.clone()
     }
-
-    pub fn runtime(&self) -> Option<Arc<Runtime<E>>> {
-        self.runtime.upgrade()
+    /// Get a handle to the runtime.
+    pub fn runtime(&self) -> Weak<Runtime<E>> {
+        self.runtime.clone()
     }
 }
 
+/// A reference to a process and to its own inbox as well as its parent's.
 #[derive(Clone)]
 pub struct ProcessRef<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     pid: ProcessId,
     process: Arc<dyn Process<E>>,
@@ -70,7 +82,7 @@ where
 
 impl<E> std::fmt::Debug for ProcessRef<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProcessRef")
@@ -83,29 +95,31 @@ where
 
 impl<E> ProcessRef<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
+    /// Get the pid this process refers to.
     pub fn pid(&self) -> ProcessId {
         self.pid
     }
-
+    /// Get a reference to the process.
     pub fn process(&self) -> &dyn Process<E> {
         &*self.process
     }
-
+    /// Get a sender handle to the process.
     pub fn sender(&self) -> UnboundedSender<ProcessSignal<E>> {
         self.tx.clone()
     }
-
-    pub fn parent(&self) -> UnboundedSender<ProcessSignal<E>> {
-        self.tx_parent.clone()
+    /// Alert to the parent that you are active
+    pub fn alert_active(&self) {
+        self.tx_parent.send(ProcessSignal::Active(self.pid)).ok();
     }
 }
 
+/// A container for a process within the darksteel [`Environment`](crate::environment::Environment).
 #[derive(Clone)]
-pub struct ProcessContainer<E>
+pub(crate) struct ProcessContainer<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
     pid: ProcessId,
     process: Arc<dyn Process<E>>,
@@ -119,8 +133,9 @@ where
 
 impl<E> ProcessContainer<E>
 where
-    E: TaskError,
+    E: TaskErrorTrait,
 {
+    /// Create a new container with a process and all of the state it requires.
     pub fn new(
         process: Arc<dyn Process<E>>,
         modules: Modules,
@@ -140,15 +155,15 @@ where
             runtime,
         }
     }
-
+    /// Get the pid of the process.
     pub fn pid(&self) -> ProcessId {
         self.pid
     }
-
+    /// Get a reference to the process.
     pub fn process(&self) -> &dyn Process<E> {
         &*self.process
     }
-
+    /// Derive a context from the container.
     pub async fn context(&self) -> ProcessContext<E> {
         ProcessContext {
             pid: self.pid,
@@ -160,7 +175,7 @@ where
             runtime: self.runtime.clone(),
         }
     }
-
+    /// Derive a reference from the container.
     pub async fn get_ref(&self) -> ProcessRef<E> {
         ProcessRef {
             pid: self.pid,
@@ -169,19 +184,21 @@ where
             tx_parent: self.tx_parent.clone(),
         }
     }
-
+    /// Get a sender handle to the process.
     pub fn sender(&self) -> UnboundedSender<ProcessSignal<E>> {
         self.tx.clone()
     }
-
+    /// Get a sender handle to the process's parent.
+    #[allow(dead_code)]
     pub fn parent(&self) -> UnboundedSender<ProcessSignal<E>> {
         self.tx_parent.clone()
     }
-
+    /// Get a handle for the current modules provider.
+    #[allow(dead_code)]
     pub fn modules(&self) -> Modules {
         self.modules.clone()
     }
-
+    /// Activate the signal handler for the process and acquire its handle.
     pub async fn handle_signals(&mut self) {
         let runtime = Handle::current();
         let process = self.process.clone();

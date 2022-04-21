@@ -382,11 +382,11 @@ impl RaftStorage<ClientRequest, ClientResponse> for Store {
                     );
                     state_machine
                         .apply_log(&data.payload_type, data.payload_data.clone())
-                        .map_err(|e| {
+                        .map_err(|error| {
                             StorageIOError::new(
                                 ErrorSubject::StateMachine,
                                 ErrorVerb::Write,
-                                e.into(),
+                                error.into(),
                             )
                         })?;
                     responses.push(ClientResponse(previous));
