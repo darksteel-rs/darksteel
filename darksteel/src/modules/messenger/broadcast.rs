@@ -1,5 +1,6 @@
 use super::error::*;
-use crate::modules::{IntoModule, Modules};
+use crate::error::UserError;
+use crate::modules::{Module, Modules};
 use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -50,8 +51,8 @@ impl Broadcast {
 }
 
 #[crate::async_trait]
-impl IntoModule for Broadcast {
-    async fn module(_: &Modules) -> Self {
-        Broadcast::new()
+impl Module for Broadcast {
+    async fn module(_: &Modules) -> Result<Self, UserError> {
+        Ok(Broadcast::new())
     }
 }

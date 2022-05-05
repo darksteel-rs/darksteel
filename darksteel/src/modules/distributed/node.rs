@@ -1,10 +1,18 @@
+use crate::modules::{Plugin, UserError};
+use crate::prelude::{Module, Modules};
 use crate::process::task::{Task, TaskErrorTrait};
 
 use super::discovery::{Discovery, HostLookup};
+use super::router::{RaftRpc, Router};
+use super::rpc::{
+    raft_actions_server::RaftActionsServer, ClientWriteRequest as ClientWriteRequestRpc,
+};
 use super::*;
-use openraft::RaftMetrics;
-use openraft::{raft::ClientWriteRequest, Config, NodeId, State};
+use openraft::raft::ClientWriteResponse;
+use openraft::ClientWriteError;
+use openraft::{raft::ClientWriteRequest, Config, NodeId};
 use std::collections::BTreeSet;
+use std::net::SocketAddr;
 use std::{
     collections::HashMap,
     net::IpAddr,
@@ -13,16 +21,14 @@ use std::{
         Arc,
     },
 };
-use tokio::sync::broadcast::{channel, Receiver, Sender};
-use tokio::sync::watch::Receiver as WatchReceiver;
+use tokio::sync::{Notify, RwLock};
+use tonic::transport::Server;
 
-const NODE_SIGNAL_CHANNEL_SIZE: usize = 64;
 static GLOBAL_SERIAL_COUNT: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone)]
-pub enum NodeSignal {
-    StateChanged(State),
-    LeaderChanged(Option<u64>),
+pub trait NodeContext: Send + Sync + Clone + Default + 'static {
+    fn config(&self) -> NodeConfig;
+    fn bind(&self, builder: &mut NodeBuilder<Self>);
 }
 
 pub struct NodeConfig {
@@ -55,65 +61,128 @@ impl Default for NodeConfig {
     }
 }
 
-pub struct NodeBuilder {
-    config: NodeConfig,
+pub struct NodeBuilder<T>
+where
+    T: NodeContext,
+{
+    context: T,
     initial_state: HashMap<Identity, Box<dyn DistributedState>>,
 }
 
-impl NodeBuilder {
-    fn new(config: NodeConfig) -> Self {
+impl<T> NodeBuilder<T>
+where
+    T: NodeContext,
+{
+    fn new(context: T) -> Self {
         Self {
-            config,
+            context,
             initial_state: Default::default(),
         }
     }
+
     pub fn with<S: DistributedStateTrait>(mut self) -> Self {
         self.initial_state.insert(S::ID, Box::new(S::default()));
         self
     }
 
-    pub async fn finish(self) -> Result<Node, NodeError> {
-        Node::new(
-            self.config.address,
-            self.config.discovery,
-            self.config.cluster_name,
-            self.initial_state,
-        )
-        .await
+    pub fn finish(mut self) -> Result<Node<T>, NodeError> {
+        let context = self.context.clone();
+
+        context.bind(&mut self);
+        Node::new(context, self.initial_state)
     }
 }
 
-pub struct Node {
-    router: Arc<router::Router>,
-    store: Arc<store::Store>,
-    node: RaftNode,
-    events: Sender<NodeSignal>,
+#[derive(Clone)]
+pub struct NodeHandle<T>
+where
+    T: NodeContext,
+{
+    node: Node<T>,
 }
 
-impl Node {
-    pub fn build() -> NodeBuilder {
-        NodeBuilder::new(Default::default())
+impl<T> NodeHandle<T> where T: NodeContext {}
+
+#[crate::async_trait]
+impl<T> Module for NodeHandle<T>
+where
+    T: NodeContext,
+{
+    async fn module(_: &Modules) -> Result<Self, UserError> {
+        Ok(Self {
+            node: Node::build()
+                .finish()
+                .map_err(|error| UserError::from("Module", error))?,
+        })
     }
-    pub fn build_with_config(node_config: NodeConfig) -> NodeBuilder {
-        NodeBuilder::new(node_config)
+}
+
+#[crate::async_trait]
+impl<T, E> Plugin<E> for NodeHandle<T>
+where
+    T: NodeContext,
+    E: TaskErrorTrait,
+{
+    async fn task(&self) -> Result<Arc<Task<E>>, UserError> {
+        self.node
+            .server_task()
+            .await
+            .map_err(|error| UserError::from("Plugin", error))
     }
-    async fn new(
-        address: IpAddr,
-        discovery: Box<dyn Discovery>,
-        cluster_name: String,
+}
+
+#[derive(Clone)]
+pub struct Node<T>
+where
+    T: NodeContext,
+{
+    context: T,
+    pub(crate) router: Arc<router::Router>,
+    pub(crate) store: Arc<store::Store>,
+    config: Arc<Config>,
+    raft: Arc<RwLock<RaftNode>>,
+    shutdown: Arc<Notify>,
+}
+
+impl<T> Node<T>
+where
+    T: NodeContext,
+{
+    pub fn build() -> NodeBuilder<T> {
+        NodeBuilder::<T>::new(Default::default())
+    }
+
+    pub fn build_with_config(context: T) -> NodeBuilder<T> {
+        NodeBuilder::<T>::new(context)
+    }
+
+    fn new(
+        context: T,
         initial_state: HashMap<Identity, Box<dyn DistributedState>>,
     ) -> Result<Self, NodeError> {
-        let config = Arc::new(Config::build(&[&cluster_name])?);
+        let config = context.config();
+        let mut raft_config = Config::default();
+
+        raft_config.cluster_name = config.cluster_name;
+
+        let raft_config = Arc::new(raft_config);
         let store = store::Store::new(initial_state);
-        let router = router::Router::new(store.id(), address, discovery);
-        let node = RaftNode::new(store.id(), config, router.clone(), store.clone());
-        let (events, _) = channel(NODE_SIGNAL_CHANNEL_SIZE);
+        let router = router::Router::new(store.id(), config.discovery);
+        let raft = Arc::new(RwLock::new(RaftNode::new(
+            store.id(),
+            raft_config.clone(),
+            router.clone(),
+            store.clone(),
+        )));
+        let shutdown = Arc::new(Notify::new());
 
         Ok(Self {
+            context,
             router,
             store,
-            node,
-            events,
+            config: raft_config,
+            raft,
+            shutdown,
         })
     }
 
@@ -121,38 +190,55 @@ impl Node {
         self.store.id()
     }
 
-    pub async fn leader(&self) -> Option<NodeId> {
-        self.node.current_leader().await
-    }
-
-    pub async fn metrics(&self) -> WatchReceiver<RaftMetrics> {
-        self.node.metrics()
-    }
-
     pub async fn peers(&self) -> BTreeSet<NodeId> {
         self.router.peers().await
     }
 
-    pub fn subscribe_events(&self) -> Receiver<NodeSignal> {
-        self.events.subscribe()
-    }
+    pub async fn server_task<E: TaskErrorTrait>(&self) -> Result<Arc<Task<E>>, RouterError> {
+        let config = self.context.config();
+        let address = SocketAddr::new(config.address, GLOBAL_PORT);
+        let raft_config = self.config.clone();
+        let router = self.router.clone();
+        let store = self.store.clone();
+        let raft = self.raft.clone();
+        let shutdown = self.shutdown.clone();
 
-    pub async fn task<E: TaskErrorTrait>(&self) -> Result<Arc<Task<E>>, NodeError> {
-        Ok(self.router.server_task(self.node.clone()).await?)
-    }
+        Ok(Task::new(move |_| async move {
+            let node = raft.read().await;
 
-    pub async fn initialise(&self) -> Result<(), NodeError> {
-        let node_ids;
-        self.router.discover_nodes().await?;
-        node_ids = self.router.peers().await;
+            router
+                .discover_nodes()
+                .await
+                .map_err(|error| E::internal(error))?;
 
-        if self.router.is_cluster_pristine().await {
-            if let Err(_) = self.node.initialize(node_ids).await {
-                tracing::info!("Detected log sync, joining");
+            let node_ids = router.peers().await;
+
+            if router.is_cluster_pristine().await {
+                if let Err(_) = node.initialize(node_ids).await {
+                    tracing::info!("Detected log sync, joining");
+                }
             }
-        }
 
-        Ok(())
+            Server::builder()
+                .add_service(RaftActionsServer::new(RaftRpc::new(
+                    node.clone(),
+                    router.clone(),
+                    shutdown.clone(),
+                )))
+                .serve_with_shutdown(address, async { shutdown.notified().await })
+                .await
+                .map_err(|error| E::internal(error))?;
+
+            node.shutdown().await.ok();
+            store.reset().await;
+            router.reset().await;
+
+            drop(node);
+
+            *raft.write().await = RaftNode::new(store.id(), raft_config, router, store);
+
+            Ok(())
+        }))
     }
 
     pub async fn state<S>(&self) -> Option<S>
@@ -162,25 +248,73 @@ impl Node {
         self.store.get_state_machine().await.get_state::<S>()
     }
 
-    pub async fn commit<M: Mutator>(&self, mutation: M) -> Result<(), CommitError> {
-        self.node.client_read().await?;
-        if let Some(leader_id) = self.node.current_leader().await {
-            if leader_id == self.store.id() {
-                self.node
-                    .client_write(ClientWriteRequest::new(ClientRequest {
-                        client: String::new(),
-                        serial: GLOBAL_SERIAL_COUNT.fetch_add(1, Ordering::SeqCst),
-                        payload_type: M::state_id(),
-                        payload_data: mutation.bytes()?,
-                    }))
-                    .await?;
-            } else {
-                return Err(CommitError::NotLeader);
-            }
-        } else {
-            return Err(CommitError::NoLeader);
-        }
+    pub async fn commit<M: Mutator>(
+        &self,
+        mutation: M,
+    ) -> Result<ClientWriteResponse<ClientResponse>, CommitError> {
+        let node = self.raft.read().await;
+        let request = ClientRequest {
+            client: self.store.id(),
+            serial: GLOBAL_SERIAL_COUNT.fetch_add(1, Ordering::SeqCst),
+            payload_type: M::state_id(),
+            payload_data: mutation.bytes()?,
+        };
 
-        Ok(())
+        client_write(&node, &self.router, &self.shutdown, request).await
+    }
+}
+
+pub(crate) async fn client_write(
+    node: &RaftNode,
+    router: &Arc<Router>,
+    shutdown: &Arc<Notify>,
+    request: ClientRequest,
+) -> Result<ClientWriteResponse<ClientResponse>, CommitError> {
+    match node
+        .client_write(ClientWriteRequest::new(request.clone()))
+        .await
+    {
+        Ok(response) => Ok(response),
+        Err(error) => match error {
+            ClientWriteError::RaftError(_) => {
+                shutdown.notify_waiters();
+                Err(error)?
+            }
+            ClientWriteError::ForwardToLeader(forward) => {
+                if let Some(leader_id) = forward.leader_id {
+                    if let Some(mut connection) = router.get_node_connection(&leader_id).await {
+                        let client = connection.client();
+
+                        let response = client
+                            .client_write(ClientWriteRequestRpc {
+                                client: request.client,
+                                serial: request.serial,
+                                payload_type: request.payload_type,
+                                payload_data: request.payload_data,
+                            })
+                            .await?
+                            .into_inner();
+
+                        Ok(ClientWriteResponse {
+                            log_id: response
+                                .log_id
+                                .ok_or_else(|| CommitError::MissingResponseData)?
+                                .into(),
+                            data: ClientResponse(Some(response.data)),
+                            membership: if let Some(membership) = response.membership {
+                                Some(membership.try_into()?)
+                            } else {
+                                None
+                            },
+                        })
+                    } else {
+                        Err(CommitError::ForwardNoConnection)
+                    }
+                } else {
+                    Err(CommitError::ForwardNoConnection)
+                }
+            }
+            _ => panic!(""),
+        },
     }
 }

@@ -4,6 +4,7 @@ use downcast_rs::impl_downcast;
 use downcast_rs::Downcast;
 use dyn_clone::DynClone;
 use error::*;
+use openraft::NodeId;
 use openraft::{AppData, AppDataResponse, Raft};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -17,6 +18,9 @@ pub mod node;
 mod router;
 mod store;
 
+// Hehehehehe
+pub(crate) const GLOBAL_PORT: u16 = 42069;
+
 pub(crate) mod rpc {
     tonic::include_proto!("raft");
 }
@@ -28,7 +32,7 @@ pub(crate) type RaftNode = Raft<ClientRequest, ClientResponse, router::Router, s
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientRequest {
     /// The ID of the client which has sent the request.
-    pub client: String,
+    pub client: NodeId,
     /// The serial number of this request.
     pub serial: u64,
     pub payload_type: Identity,

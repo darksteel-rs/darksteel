@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::UserError;
 use std::net::IpAddr;
 
 /// This is a trait for objects that tell the Raft node how to discover its
@@ -6,7 +6,7 @@ use std::net::IpAddr;
 #[crate::async_trait]
 pub trait Discovery: Send + Sync + 'static {
     /// Return a list of discovered IP addresses
-    async fn discover(&self) -> Result<Vec<IpAddr>>;
+    async fn discover(&self) -> Result<Vec<IpAddr>, UserError>;
 }
 
 /// A basic host lookup discovery method. This is useful in the context of
@@ -23,7 +23,8 @@ impl HostLookup {
 
 #[crate::async_trait]
 impl Discovery for HostLookup {
-    async fn discover(&self) -> Result<Vec<IpAddr>> {
-        Ok(dns_lookup::lookup_host(self.0.as_str())?)
+    async fn discover(&self) -> Result<Vec<IpAddr>, UserError> {
+        Ok(dns_lookup::lookup_host(self.0.as_str())
+            .map_err(|error| UserError::from("Discovery", error))?)
     }
 }

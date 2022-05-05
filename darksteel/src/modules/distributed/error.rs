@@ -7,8 +7,8 @@ pub enum NodeError {
     RaftConfig(#[from] openraft::error::ConfigError),
     #[error("Router Error: {0}")]
     Router(#[from] RouterError),
-    #[error("Node Error: {0}")]
-    Any(#[from] anyhow::Error),
+    #[error("User Error: {0}")]
+    UserError(#[from] crate::error::UserError),
 }
 
 /// A connection error from a distributed [`Node`](crate::modules::distributed::node::Node).
@@ -29,10 +29,16 @@ pub enum CommitError {
     RaftClientWrite(#[from] openraft::error::ClientWriteError),
     #[error("Mutator Error: ")]
     Mutator(#[from] MutatorError),
-    #[error("Could not commit to distributed state, no leader exists")]
-    NoLeader,
-    #[error("Could not commit to distributed state, not the leader")]
+    #[error("Could not commit to distributed state - Not the leader")]
     NotLeader,
+    #[error("Could not forward commit - No leader exists")]
+    ForwardNoLeader,
+    #[error("Could not forward commit - Cannot connect to leader")]
+    ForwardNoConnection,
+    #[error("Could not forward commit - Transport Error: {0}")]
+    ForwardTransport(#[from] tonic::Status),
+    #[error("Could not")]
+    MissingResponseData,
 }
 
 /// An internal distributed state machine error.
@@ -56,6 +62,6 @@ pub enum MutatorError {
 pub enum RouterError {
     #[error("Transport Error: {0}")]
     Transport(#[from] tonic::transport::Error),
-    #[error("Router Error: {0}")]
-    Any(#[from] anyhow::Error),
+    #[error("User Error: {0}")]
+    UserError(#[from] crate::error::UserError),
 }

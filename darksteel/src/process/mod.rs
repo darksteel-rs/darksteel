@@ -1,6 +1,6 @@
 use self::{runtime::Runtime, task::ProcessId};
 use crate::process::task::TaskErrorTrait;
-use container::*;
+use context::*;
 use downcast_rs::{impl_downcast, Downcast};
 use std::{
     sync::{atomic::AtomicU64, Arc},
@@ -9,7 +9,7 @@ use std::{
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Types relating to [`Process`] internals.
-pub mod container;
+pub mod context;
 /// The underlying runtime for the [`Environment`](crate::environment::Environment).
 pub mod runtime;
 /// Types for the [`Supervisor`](supervisor::Supervisor) process which handles
@@ -97,10 +97,19 @@ where
 /// conditions.
 #[derive(Clone, Debug)]
 pub struct ProcessConfig {
+    /// The name of the process.
     pub name: Option<String>,
+    /// The termination policy of the process.
     pub termination_policy: ChildTerminationPolicy,
+    /// The restart policy of the process.
     pub restart_policy: ChildRestartPolicy,
+    /// An indicator of whether the process is significant or not. This is not
+    /// currently used as Supervisors currently don't support dynamic children.
     pub significant: bool,
+    /// An indicator of whether the process is responsible for alerting if it's
+    /// active. This is useful for staggering workloads of dependent tasks. This
+    /// is only supported on [supervisors](supervisor::Supervisor).
+    pub deferred: bool,
 }
 
 impl ProcessConfig {
@@ -117,6 +126,7 @@ impl Default for ProcessConfig {
             termination_policy: ChildTerminationPolicy::Brutal,
             restart_policy: ChildRestartPolicy::Permanent,
             significant: false,
+            deferred: false,
         }
     }
 }
@@ -168,7 +178,5 @@ pub(crate) fn send<
         if let Err(error) = sender.send(signal) {
             tracing::error!("Could not send signal: {error}", error = error);
         }
-    } else {
-        tracing::error!("Could not send signal: None supplied");
     }
 }

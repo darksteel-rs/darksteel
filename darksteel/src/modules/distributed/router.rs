@@ -1,21 +1,20 @@
-use crate::process::task::{Task, TaskErrorTrait};
-
 use super::{
     discovery::Discovery,
     error::*,
+    node::client_write,
     rpc::{
-        raft_actions_client::RaftActionsClient,
-        raft_actions_server::{RaftActions, RaftActionsServer},
+        raft_actions_client::RaftActionsClient, raft_actions_server::RaftActions,
         AppendEntriesRequest as AppendEntriesRequestRpc,
-        AppendEntriesResponse as AppendEntriesResponseRpc, Empty, Entry as EntryRpc, InfoResponse,
+        AppendEntriesResponse as AppendEntriesResponseRpc, ClientWriteRequest, ClientWriteResponse,
+        Empty, Entry as EntryRpc, InfoResponse,
         InstallSnapshotRequest as InstallSnapshotRequestRpc,
-        InstallSnapshotResponse as InstallSnapshotResponseRpc, LogId as LogIdRpc, MembershipConfig,
-        SnapshotMeta as SnapshotMetaRpc, VoteRequest as VoteRequestRpc,
-        VoteResponse as VoteResponseRpc,
+        InstallSnapshotResponse as InstallSnapshotResponseRpc, LogId as LogIdRpc,
+        Membership as MembershipRpc, MembershipConfig, SnapshotMeta as SnapshotMetaRpc,
+        VoteRequest as VoteRequestRpc, VoteResponse as VoteResponseRpc,
     },
-    ClientRequest, RaftNode,
+    ClientRequest, RaftNode, GLOBAL_PORT,
 };
-use openraft::raft::{InstallSnapshotRequest, InstallSnapshotResponse};
+use openraft::raft::{InstallSnapshotRequest, InstallSnapshotResponse, Membership};
 use openraft::raft::{VoteRequest, VoteResponse};
 use openraft::{async_trait::async_trait, LogId};
 use openraft::{
@@ -23,29 +22,25 @@ use openraft::{
     SnapshotMeta,
 };
 use openraft::{NodeId, RaftNetwork};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    net::IpAddr,
-};
-use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::{
-    watch::{self, Sender},
-    RwLock,
-};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use tokio::sync::{Notify, RwLock};
 use tonic::transport::{Channel, Endpoint};
-use tonic::{transport::Server, Request, Response, Status};
-
-// Hehehehehe
-const GLOBAL_PORT: u16 = 42069;
+use tonic::{Request, Response, Status};
 
 pub struct RaftRpc {
     node: RaftNode,
-    tx_shutdown: Sender<()>,
+    router: Arc<Router>,
+    shutdown: Arc<Notify>,
 }
 
 impl RaftRpc {
-    pub fn new(node: RaftNode, tx_shutdown: Sender<()>) -> Self {
-        Self { node, tx_shutdown }
+    pub fn new(node: RaftNode, router: Arc<Router>, shutdown: Arc<Notify>) -> Self {
+        Self {
+            node,
+            router,
+            shutdown,
+        }
     }
 }
 
@@ -67,6 +62,36 @@ impl From<LogId> for LogIdRpc {
     }
 }
 
+impl From<Membership> for MembershipRpc {
+    fn from(membership: Membership) -> Self {
+        Self {
+            configs: membership
+                .get_configs()
+                .iter()
+                .map(|config| MembershipConfig {
+                    members: config.into_iter().map(|id| *id).collect(),
+                })
+                .collect(),
+            nodes: Some(MembershipConfig {
+                members: membership.all_nodes().into_iter().map(|id| *id).collect(),
+            }),
+        }
+    }
+}
+
+impl TryFrom<MembershipRpc> for Membership {
+    type Error = Status;
+    fn try_from(membership: MembershipRpc) -> Result<Self, Self::Error> {
+        Ok(Self::new_multi(
+            membership
+                .configs
+                .into_iter()
+                .map(|config| config.members.into_iter().collect())
+                .collect(),
+        ))
+    }
+}
+
 impl TryFrom<SnapshotMetaRpc> for SnapshotMeta {
     type Error = Status;
 
@@ -75,7 +100,7 @@ impl TryFrom<SnapshotMetaRpc> for SnapshotMeta {
             last_log_id: match meta.last_log_id {
                 Some(log_id) => log_id.into(),
                 None => {
-                    return Err(Status::aborted(
+                    return Err(Status::data_loss(
                         "Missing `last_log_id` in `SnapshotMeta` RPC",
                     ))
                 }
@@ -96,6 +121,34 @@ impl From<SnapshotMeta> for SnapshotMetaRpc {
 
 #[tonic::async_trait]
 impl RaftActions for RaftRpc {
+    async fn client_write(
+        &self,
+        request: Request<ClientWriteRequest>,
+    ) -> Result<Response<ClientWriteResponse>, Status> {
+        let request = request.into_inner();
+        let request = ClientRequest {
+            client: request.client,
+            serial: request.serial,
+            payload_type: request.payload_type,
+            payload_data: request.payload_data,
+        };
+        let response = client_write(&self.node, &self.router, &self.shutdown, request)
+            .await
+            .map_err(|error| Status::aborted(format!("Could not write to client: {:?}", error)))?;
+
+        Ok(Response::new(ClientWriteResponse {
+            log_id: Some(response.log_id.into()),
+            data: response
+                .data
+                .0
+                .ok_or_else(|| Status::data_loss("Missing `data` in `ClientWrite` RPC"))?,
+            membership: if let Some(membership) = response.membership {
+                Some(membership.into())
+            } else {
+                None
+            },
+        }))
+    }
     async fn info(&self, _: Request<Empty>) -> Result<Response<InfoResponse>, Status> {
         use openraft::State;
 
@@ -159,9 +212,7 @@ impl RaftActions for RaftRpc {
             })
             .await
             .map_err(|error| {
-                // We don't care if this fails. If the receiver is dropped, the
-                // consequence is the same.
-                self.tx_shutdown.send(()).ok();
+                self.shutdown.notify_waiters();
                 Status::aborted(format!("Could not append entries: {:?}", error))
             })?;
 
@@ -198,9 +249,7 @@ impl RaftActions for RaftRpc {
             })
             .await
             .map_err(|error| {
-                // We don't care if this fails. If the receiver is dropped, the
-                // consequence is the same.
-                self.tx_shutdown.send(()).ok();
+                self.shutdown.notify_waiters();
                 Status::aborted(format!("Could not install snapshot: {:?}", error))
             })?;
 
@@ -226,9 +275,7 @@ impl RaftActions for RaftRpc {
             })
             .await
             .map_err(|error| {
-                // We don't care if this fails. If the receiver is dropped, the
-                // consequence is the same.
-                self.tx_shutdown.send(()).ok();
+                self.shutdown.notify_waiters();
                 Status::aborted(format!("Could not vote: {:?}", error))
             })?;
 
@@ -259,7 +306,6 @@ impl NodeConnection {
 
 pub struct Router {
     id: NodeId,
-    address: IpAddr,
     /// Discovery method
     discovery: Box<dyn Discovery>,
     /// Discovered nodes
@@ -268,13 +314,28 @@ pub struct Router {
 
 impl Router {
     /// Create a new instance.
-    pub fn new(id: NodeId, address: IpAddr, discovery: Box<dyn Discovery>) -> Arc<Self> {
+    pub fn new(id: NodeId, discovery: Box<dyn Discovery>) -> Arc<Self> {
         Arc::new(Self {
             id,
-            address,
             discovery,
             discovered_nodes: Default::default(),
         })
+    }
+
+    pub async fn reset(&self) {
+        *self.discovered_nodes.write().await = Default::default();
+    }
+
+    pub fn id(&self) -> NodeId {
+        self.id
+    }
+
+    pub(crate) async fn get_node_connection(&self, id: &NodeId) -> Option<NodeConnection> {
+        if let Some(node) = self.discovered_nodes.read().await.get(id) {
+            Some(node.clone())
+        } else {
+            None
+        }
     }
 
     pub async fn peers(&self) -> BTreeSet<NodeId> {
@@ -287,7 +348,7 @@ impl Router {
     }
 
     pub async fn discover_nodes(&self) -> Result<(), RouterError> {
-        let addresses = self.discovery.discover().await?;
+        let addresses: _ = self.discovery.discover().await?;
         let mut discovered_nodes = self.discovered_nodes.write().await;
 
         for address in addresses {
@@ -297,7 +358,7 @@ impl Router {
                 if let Ok(info) = connection.client().info(Empty {}).await {
                     let id = info.into_inner().id;
 
-                    if id != self.id {
+                    if id != self.id() {
                         discovered_nodes.insert(id, connection);
                     }
                 } else {
@@ -327,33 +388,6 @@ impl Router {
 
         pristine
     }
-
-    pub async fn server_task<E: TaskErrorTrait>(
-        &self,
-        node: RaftNode,
-    ) -> Result<Arc<Task<E>>, RouterError> {
-        let address = SocketAddr::new(self.address, GLOBAL_PORT);
-        let node = node.clone();
-
-        self.discover_nodes().await?;
-
-        Ok(Task::new(move |_| async move {
-            let (tx, mut rx) = watch::channel(());
-
-            Server::builder()
-                .add_service(RaftActionsServer::new(RaftRpc::new(node, tx)))
-                .serve_with_shutdown(address, async {
-                    match rx.changed().await {
-                        Ok(_) => tracing::error!("Node Error - shutting down."),
-                        Err(error) => tracing::error!("Node Error: {:?} - shutting down.", error),
-                    }
-                })
-                .await
-                .map_err(|error| E::internal(error))?;
-
-            Ok(())
-        }))
-    }
 }
 
 #[async_trait]
@@ -363,7 +397,7 @@ impl RaftNetwork<ClientRequest> for Router {
         &self,
         target: NodeId,
         rpc: AppendEntriesRequest<ClientRequest>,
-    ) -> anyhow::Result<AppendEntriesResponse> {
+    ) -> ::anyhow::Result<AppendEntriesResponse> {
         let mut discovered_nodes = self.discovered_nodes.write().await;
 
         if let Some(connection) = discovered_nodes.get_mut(&target) {

@@ -1,5 +1,6 @@
 use super::error::*;
-use crate::modules::{IntoModule, Modules};
+use crate::error::UserError;
+use crate::modules::{Module, Modules};
 use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -89,8 +90,8 @@ impl Mpsc {
 }
 
 #[crate::async_trait]
-impl IntoModule for Mpsc {
-    async fn module(_: &Modules) -> Self {
-        Mpsc::new()
+impl Module for Mpsc {
+    async fn module(_: &Modules) -> Result<Self, UserError> {
+        Ok(Mpsc::new())
     }
 }

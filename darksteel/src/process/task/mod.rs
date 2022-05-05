@@ -26,12 +26,12 @@ pub type ProcessId = u64;
 /// An alias for a `Result<(), E>`
 pub type TaskResult<E> = Result<(), E>;
 
-pub(crate) trait TaskTrait<E: TaskErrorTrait>:
+pub(crate) trait TaskTraitInner<E: TaskErrorTrait>:
     Sync + FnOnce(TaskContext<E>) -> BoxFuture<'static, TaskResult<E>> + DynClone + Send + 'static
 {
 }
 
-impl<F, E> TaskTrait<E> for F
+impl<F, E> TaskTraitInner<E> for F
 where
     F: Sync
         + FnOnce(TaskContext<E>) -> BoxFuture<'static, TaskResult<E>>
@@ -42,7 +42,7 @@ where
 {
 }
 
-dyn_clone::clone_trait_object!(<E> TaskTrait<E> where E: TaskErrorTrait);
+dyn_clone::clone_trait_object!(<E> TaskTraitInner<E> where E: TaskErrorTrait);
 
 /// A task that runs within the darksteel [`Environment`](crate::environment::Environment).
 pub struct Task<E>
@@ -50,7 +50,7 @@ where
     E: TaskErrorTrait,
 {
     id: ProcessId,
-    task: Box<dyn TaskTrait<E>>,
+    task: Box<dyn TaskTraitInner<E>>,
     handle: Mutex<Option<JoinHandle<()>>>,
     active: Arc<AtomicBool>,
     config: ProcessConfig,
@@ -129,13 +129,16 @@ where
                     let process = context.get_ref().await;
                     let runtime = context.runtime();
                     let context = TaskContext::new(modules, process, runtime);
+                    let deferred = self.config.deferred;
 
                     if !self.active.load(Ordering::SeqCst) {
                         active.store(true, Ordering::SeqCst);
 
                         let tx_parent = parent.clone();
                         let handle = runtime_raw.spawn(async move {
-                            send(&tx_parent, ProcessSignal::Active(pid));
+                            if !deferred {
+                                send(&tx_parent, ProcessSignal::Active(pid));
+                            }
                             let result = AssertUnwindSafe((task)(context)).catch_unwind().await;
                             active.store(false, Ordering::SeqCst);
                             match result {

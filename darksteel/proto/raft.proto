@@ -4,6 +4,7 @@ package raft;
 
 service RaftActions {
   rpc Info (Empty) returns (InfoResponse) {}
+  rpc ClientWrite (ClientWriteRequest) returns (ClientWriteResponse) {}
   rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse) {}
   rpc InstallSnapshot (InstallSnapshotRequest) returns (InstallSnapshotResponse) {}
   rpc Vote (VoteRequest) returns (VoteResponse) {}
@@ -14,6 +15,11 @@ message Empty {}
 message LogId {
   uint64 term = 1;
   uint64 index = 2;
+}
+
+message Membership {
+  repeated MembershipConfig configs = 1;
+  MembershipConfig nodes = 2;
 }
 
 message SnapshotMeta {
@@ -33,6 +39,19 @@ message InfoResponse {
   uint64 last_applied = 5;
   optional uint64 current_leader = 6;
   MembershipConfig membership_config = 7;
+}
+
+message ClientWriteRequest {
+  uint64 client = 1;
+  uint64 serial = 2;
+  uint64 payload_type = 3;
+  bytes payload_data = 4;
+}
+
+message ClientWriteResponse {
+  LogId log_id = 1;
+  bytes data = 2;
+  Membership membership = 3;
 }
 
 message Entry {

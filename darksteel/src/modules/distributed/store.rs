@@ -13,6 +13,7 @@ use std::io::Cursor;
 use std::ops::RangeBounds;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::{RwLock, RwLockReadGuard};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -28,11 +29,13 @@ pub struct StateMachine {
     last_applied_log: LogId,
     last_membership: Option<EffectiveMembership>,
     /// A mapping of client IDs to their state info.
-    client_serial_responses: HashMap<(String, Identity), (u64, Option<Vec<u8>>)>,
+    client_serial_responses: HashMap<(NodeId, Identity), (u64, Option<Vec<u8>>)>,
     /// The current status of a client by ID.
-    client_status: HashMap<(String, Identity), Vec<u8>>,
+    client_status: HashMap<(NodeId, Identity), Vec<u8>>,
     /// The current state of the Raft node
     state: HashMap<Identity, Box<dyn DistributedState>>,
+    /// The preserved initial state.
+    initial_state: HashMap<Identity, Box<dyn DistributedState>>,
 }
 
 impl StateMachine {
@@ -42,8 +45,17 @@ impl StateMachine {
             last_membership: None,
             client_serial_responses: Default::default(),
             client_status: Default::default(),
-            state: initial_state,
+            state: initial_state.clone(),
+            initial_state,
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.last_applied_log = Default::default();
+        self.last_membership = None;
+        self.client_serial_responses = Default::default();
+        self.client_status = Default::default();
+        self.state = self.initial_state.clone();
     }
 
     pub fn get_state<S>(&self) -> Option<S>
@@ -90,10 +102,8 @@ pub struct Store {
 }
 
 impl Store {
-    /// Create a new `Store` instance.
+    /// Create a new store instance.
     pub fn new(initial_state: HashMap<Identity, Box<dyn DistributedState>>) -> Arc<Self> {
-        use std::time::SystemTime;
-
         let mut hasher = DefaultHasher::new();
         let log = RwLock::new(BTreeMap::new());
         let state_machine = RwLock::new(StateMachine::new(initial_state));
@@ -110,8 +120,10 @@ impl Store {
         hasher.write_u128(time.as_nanos());
         hasher.write_u128(rand::random());
 
+        let id = hasher.finish();
+
         Arc::new(Self {
-            id: hasher.finish(),
+            id,
             log,
             state_machine,
             hard_state,
@@ -119,15 +131,38 @@ impl Store {
             current_snapshot,
         })
     }
+    pub async fn reset(&self) {
+        let mut hasher = DefaultHasher::new();
 
+        let time = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+
+        hasher.write_u128(time.as_nanos());
+        hasher.write_u128(rand::random());
+
+        let mut log = self.log.write().await;
+        let mut state_machine = self.state_machine.write().await;
+        let mut hard_state = self.hard_state.write().await;
+        let mut current_snapshot = self.current_snapshot.write().await;
+
+        *log = Default::default();
+        *hard_state = None;
+        *current_snapshot = None;
+
+        state_machine.reset();
+        self.snapshot_index.store(0, Ordering::SeqCst);
+    }
+    /// Get the id of the store.
     pub fn id(&self) -> NodeId {
         self.id
     }
-
+    /// Get the internal state machine.
     pub async fn get_state_machine(&self) -> RwLockReadGuard<'_, StateMachine> {
         self.state_machine.read().await
     }
 
+    /// Find the first membership log.
     fn find_first_membership_log<'a, T, D>(mut it: T) -> Option<EffectiveMembership>
     where
         T: 'a + Iterator<Item = &'a Entry<D>>,
@@ -177,7 +212,7 @@ impl Store {
             Some(x) => x,
             None => EffectiveMembership {
                 log_id: LogId { term: 0, index: 0 },
-                membership: Membership::new_initial(self.id),
+                membership: Membership::new_initial(self.id()),
             },
         })
     }
@@ -216,7 +251,7 @@ impl RaftStorage<ClientRequest, ClientResponse> for Store {
                 })
             }
             None => {
-                let new = InitialState::new_initial(self.id);
+                let new = InitialState::new_initial(self.id());
                 *hard_state = Some(new.hard_state.clone());
                 Ok(new)
             }
@@ -354,7 +389,7 @@ impl RaftStorage<ClientRequest, ClientResponse> for Store {
         for entry in entries {
             tracing::debug!(
                 "id: `{}` replicate to state machine index: `{}`",
-                self.id,
+                self.id(),
                 entry.log_id.index
             );
 

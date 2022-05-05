@@ -212,9 +212,11 @@ pub fn distributed(_: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input
 
-        #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+        #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
         pub enum #enum_name #generics {
-            #(#enum_variants),*
+            #(#enum_variants),*,
+            #[serde(other)]
+            Unknown
         }
 
         impl #full_name {
@@ -227,7 +229,8 @@ pub fn distributed(_: TokenStream, item: TokenStream) -> TokenStream {
                 let mutation: #enum_name = bincode::deserialize(data.as_slice())?;
 
                 match mutation {
-                    #(#match_variants),*
+                    #(#match_variants),*,
+                    #enum_name :: Unknown => ()
                 }
 
                 Ok(bincode::serialize(self)?)

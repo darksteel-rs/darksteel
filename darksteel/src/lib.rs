@@ -10,11 +10,6 @@
 //!```rust
 #![doc = include_str!("../examples/supervisor_restart_all.rs")]
 //! ```
-//!
-//! ## Supervisor of supervisors
-//!```rust
-#![doc = include_str!("../examples/supervisor_supervisor.rs")]
-//! ```
 
 /// Contains the environment data structure.
 pub mod environment;
@@ -31,9 +26,9 @@ pub mod process;
 /// The default prelude with all the most important types.
 pub mod prelude {
     pub use crate::environment::Environment;
-    pub use crate::error::TaskError;
+    pub use crate::error::{TaskError, UserError};
     pub use crate::identity::IdentityTrait;
-    pub use crate::modules::{IntoModule, Modules};
+    pub use crate::modules::{Module, Modules};
     pub use crate::process::{
         supervisor::{
             AutomaticTerminationPolicy, Supervisor, SupervisorConfig, SupervisorRestartPolicy,

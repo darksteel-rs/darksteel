@@ -1,3 +1,5 @@
+use super::Module;
+use crate::error::UserError;
 use error::*;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -6,8 +8,6 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, RwLockMappedWriteGuard, RwLockReadGuard, RwLockWriteGuard};
 use unchecked_unwrap::UncheckedUnwrap;
-
-use super::IntoModule;
 
 pub mod error;
 
@@ -100,8 +100,8 @@ impl Storage {
 }
 
 #[crate::async_trait]
-impl IntoModule for Storage {
-    async fn module(_: &super::Modules) -> Self {
-        Self::new()
+impl Module for Storage {
+    async fn module(_: &super::Modules) -> Result<Self, UserError> {
+        Ok(Self::new())
     }
 }

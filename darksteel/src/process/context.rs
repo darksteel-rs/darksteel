@@ -109,7 +109,8 @@ where
     pub fn sender(&self) -> UnboundedSender<ProcessSignal<E>> {
         self.tx.clone()
     }
-    /// Alert to the parent that you are active
+    /// Alert to the parent that the process is active. This is only useful if
+    /// the process is running in [deferred](super::ProcessConfig::deferred) mode.
     pub fn alert_active(&self) {
         self.tx_parent.send(ProcessSignal::Active(self.pid)).ok();
     }

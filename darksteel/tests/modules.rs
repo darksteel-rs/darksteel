@@ -6,17 +6,17 @@ struct Foo;
 struct Bar;
 
 #[darksteel::async_trait]
-impl IntoModule for Foo {
-    async fn module(_: &Modules) -> Self {
-        Foo
+impl Module for Foo {
+    async fn module(_: &Modules) -> Result<Self, UserError> {
+        Ok(Foo)
     }
 }
 
 #[darksteel::async_trait]
-impl IntoModule for Bar {
-    async fn module(modules: &Modules) -> Self {
-        modules.handle::<Foo>().await;
-        Bar
+impl Module for Bar {
+    async fn module(modules: &Modules) -> Result<Self, UserError> {
+        modules.handle::<Foo>().await?;
+        Ok(Bar)
     }
 }
 
@@ -25,5 +25,5 @@ impl IntoModule for Bar {
 async fn dependencies() {
     let modules = Modules::new();
 
-    modules.handle::<Bar>().await;
+    modules.handle::<Bar>().await.ok();
 }
